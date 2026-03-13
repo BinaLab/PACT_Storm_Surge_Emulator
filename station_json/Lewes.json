@@ -1,0 +1,86 @@
+{
+  "station_key": "Lewes",
+  "display_name": "Lewes (NOAA tide station)",
+  "noaa_station_id": "8557380",
+  "source": {
+    "provider": "NOAA Tides & Currents",
+    "page_type": "station details",
+    "retrieved_utc": null,
+    "url": null
+  },
+  "dates": {
+    "established": "1919-01-14",
+    "present_installation": "1990-12-04",
+    "date_removed": null
+  },
+  "time_meridian": {
+    "value": 75.0,
+    "unit": "deg",
+    "direction": "W"
+  },
+  "location": {
+    "latitude_dms": "38\u00b0 47.0 N",
+    "longitude_dms": "75\u00b0 7.2 W",
+    "latitude_deg": 38.7833333333,
+    "longitude_deg": -75.12
+  },
+  "tidal_statistics": {
+    "mean_range": {
+      "value": 4.08,
+      "unit": "ft"
+    },
+    "diurnal_range": {
+      "value": 4.65,
+      "unit": "ft"
+    }
+  },
+  "water_level_extremes": {
+    "max": {
+      "value": 4.61,
+      "unit": "ft",
+      "reference": "MHHW",
+      "date": "2016-01-23"
+    },
+    "min": {
+      "value": -4.21,
+      "unit": "ft",
+      "reference": "MLLW",
+      "date": "1978-01-10"
+    }
+  },
+  "met_site_elevation": {
+    "value": 8.5,
+    "unit": "ft",
+    "reference": "above MSL"
+  },
+  "embedding_features": {
+    "version": "v1",
+    "notes": "Feature vector intended for station metadata encoder. Units are kept as provided by NOAA; model-side code should normalize.",
+    "feature_names": [
+      "latitude_deg",
+      "longitude_deg",
+      "mean_range_ft",
+      "diurnal_range_ft",
+      "met_site_elevation_ft_msl"
+    ],
+    "feature_values": [
+      38.7833333333,
+      -75.12,
+      4.08,
+      4.65,
+      8.5
+    ],
+    "optional_feature_names": [
+      "water_level_max_ft_ref_mhhw",
+      "water_level_min_ft_ref_mllw"
+    ],
+    "optional_feature_values": [
+      4.61,
+      -4.21
+    ]
+  },
+  "lat": 38.7833333333,
+  "lon": -75.12,
+  "elevation_ft_msl": 8.5,
+  "elevation_m": 2.5908
+}

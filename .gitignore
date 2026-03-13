@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+runs/
+wandb/
+events.out.tfevents.*
+
+# Model files
+*.pt
+*.pth
+*.ckpt
+
+# Arrays / saved outputs
+*.npz
+*.npy
+*.pkl
+*.joblib
+
+# Data / outputs
+data/
+Data/
+outputs/
+results/
+predictions/
+checkpoints/
+cache/
+tmp/
