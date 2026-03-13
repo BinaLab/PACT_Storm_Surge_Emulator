@@ -57,7 +57,7 @@ from emulator.data import (
     station_features_from_json,
     years_from_indices,
 )
-from emulator.models import PerceiverLikeModel3, SpatialOnlyGraphSAGEBatch, SpatioTemporalGraphSAGEBatch
+from emulator.models import PACT, SpatialOnlyGraphSAGEBatch, SpatioTemporalGraphSAGEBatch
 from emulator.training import (
     collect_test_preds_unnorm,
     eval_full_metrics_and_logs,
@@ -791,7 +791,7 @@ def main():
         elif model_name == "perceiver3":
             station_feat_dim = int(station_feat.numel()) if (station_feat is not None) else 0
             print0("[Model] Perceiver-like Model3")
-            model = PerceiverLikeModel3(
+            model = PACT(
                 in_channels=in_channels,
                 hidden_channels=args.hidden_channels,
                 out_channels=out_channels,

@@ -2,7 +2,7 @@
 
 from .architectures import (
     MLP,
-    PerceiverLikeModel3,
+    PACT,
     SpatialOnlyGraphSAGEBatch,
     SpatioTemporalGraphSAGEBatch,
     TransformerBlock,
@@ -13,5 +13,5 @@ __all__ = [
     "SpatialOnlyGraphSAGEBatch",
     "SpatioTemporalGraphSAGEBatch",
     "TransformerBlock",
-    "PerceiverLikeModel3",
+    "PACT",
 ]

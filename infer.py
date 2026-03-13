@@ -29,7 +29,7 @@ from emulator.data import (
     station_features_from_json,
 )
 from emulator.inference import classify_past_future, infer_one_loader, parse_year_tag
-from emulator.models import PerceiverLikeModel3, SpatialOnlyGraphSAGEBatch, SpatioTemporalGraphSAGEBatch
+from emulator.models import PACT, SpatialOnlyGraphSAGEBatch, SpatioTemporalGraphSAGEBatch
 
 
 warnings.filterwarnings(
@@ -266,7 +266,7 @@ def main():
         use_tokens = bool(use_pmean) and (perceiver_pmean_mode in ("tokens", "both"))
         use_global = bool(use_pmean) and (perceiver_pmean_mode in ("global", "both"))
 
-        model = PerceiverLikeModel3(
+        model = PACT(
             in_channels=in_channels,
             hidden_channels=hidden_channels,
             out_channels=out_channels,

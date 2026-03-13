@@ -221,7 +221,7 @@ class TransformerBlock(nn.Module):
         return x
 
 
-class PerceiverLikeModel3(nn.Module):
+class PACT(nn.Module):
     """Perceiver-like spatio-temporal model with optional p_mean pathways.
 
     Core flow:
@@ -547,5 +547,5 @@ __all__ = [
     "SpatialOnlyGraphSAGEBatch",
     "SpatioTemporalGraphSAGEBatch",
     "TransformerBlock",
-    "PerceiverLikeModel3",
+    "PACT",
 ]
