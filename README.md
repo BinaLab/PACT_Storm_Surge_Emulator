@@ -81,12 +81,20 @@ This repo support a baseline model without historical forcing data, which contai
 
 Use files in the preprocessing folder to pre-processing the ADCIRC simulation files and generate the Graph with Pytorch Geometric. Then put the generated files into the Data folder.
 
-For training in non-slurm environment, run ```bash train.sh configs/configs_train/NCEP/train_config_NCEP_Battery_P3.sh```.
+For training in non-slurm environment, run 
 
-For training in slurm environment, run ```sbatch train_sbatch.sh configs/configs_train/NCEP/train_config_NCEP_Battery_P3.sh```.
+```bash train.sh configs/configs_train/NCEP/train_config_NCEP_Battery_P3.sh```.
 
-For inference in non-slurm environment, run ```bash infer.sh configs/configs_infer/infer_config_NCEP.sh```.
+For training in slurm environment, run 
 
-For inference in slurm environment, run ```sbatchh infer_sbatch.sh configs/configs_infer/infer_config_NCEP.sh```.
+```sbatch train_sbatch.sh configs/configs_train/NCEP/train_config_NCEP_Battery_P3.sh```.
+
+For inference in non-slurm environment, run 
+
+```bash infer.sh configs/configs_infer/infer_config_NCEP.sh```.
+
+For inference in slurm environment, run 
+
+```sbatchh infer_sbatch.sh configs/configs_infer/infer_config_NCEP.sh```.
 
 Do not forget to change the configuration files based on the path of graph data.
