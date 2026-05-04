@@ -17,7 +17,7 @@ trap cleanup INT TERM
 #   bash infer_multi.sh configs/infer_multi_config.sh
 # ============================================================
 
-CONFIG_PATH="${1:-configs/infer_multi_config.sh}"
+CONFIG_PATH="${1:-configs/configs_infer/infer_multi_config_NCEP.sh}"
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "[FATAL] config not found: ${CONFIG_PATH}"
   exit 2
@@ -39,16 +39,20 @@ set -u
 
 : "${CUDA_LAUNCH_BLOCKING_FLAG:=0}"
 : "${TORCH_GPU_PROBE:=0}"
+: "${DO_CONDA:=1}"
+: "${CONDA_MODULE:=anaconda}"
+: "${CONDA_SH:=/software/u22/anaconda/python3.9/etc/profile.d/conda.sh}"
+: "${CONDA_ENV:=torchpyg-cu124}"
 
 : "${USE_AMP:=1}"
 : "${AMP_DTYPE:=bf16}"
 : "${USE_TF32:=1}"
 : "${TORCH_THREADS:=1}"
 
-: "${NUM_WORKERS:=2}"
-: "${PIN_MEMORY:=1}"
-: "${PERSISTENT_WORKERS:=1}"
-: "${PREFETCH_FACTOR:=4}"
+: "${NUM_WORKERS:=0}"
+: "${PIN_MEMORY:=0}"
+: "${PERSISTENT_WORKERS:=0}"
+: "${PREFETCH_FACTOR:=0}"
 : "${MP_CONTEXT:=fork}"
 
 : "${CKPT_PATH:=}"
@@ -72,17 +76,29 @@ if [[ -z "${CKPT_RESOLVED}" ]]; then
   exit 2
 fi
 
-# Conda activation (optional; matches fields used in your other scripts)
-if [[ -n "${CONDA_SH:-}" && -n "${CONDA_ENV_2:-}" ]]; then
+init_conda () {
+  if [[ "${DO_CONDA}" -ne 1 ]]; then
+    return 0
+  fi
+  if [[ ! -f "${CONDA_SH}" ]]; then
+    echo "[WARN] conda.sh not found at ${CONDA_SH}. Skipping conda activation."
+    return 0
+  fi
   set +u
+  module load "${CONDA_MODULE}"
   # shellcheck disable=SC1090
   source "${CONDA_SH}"
-  export CONDA_PKGS_DIRS=${CONDA_PKGS_DIRS:-/work/09575/$USER/conda_pkgs}
-  if [[ -n "${CONDA_ENV_1:-}" ]]; then
-    conda activate "${CONDA_ENV_1}" >/dev/null 2>&1 || true
-  fi
-  conda activate "${CONDA_ENV_2}"
+  conda activate "${CONDA_ENV}"
+  hash -r
   set -u
+}
+
+init_conda
+
+if [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
+  PYTHON_BIN="${CONDA_PREFIX}/bin/python"
+else
+  PYTHON_BIN="$(command -v python)"
 fi
 
 export PYTHONUNBUFFERED=1
@@ -139,7 +155,7 @@ echo "Runs:              ${#RUNS[@]}"
 echo "========================================="
 
 if [[ "${TORCH_GPU_PROBE}" -eq 1 ]]; then
-  python - <<'PY'
+  "${PYTHON_BIN}" - <<'PY'
 import torch
 print("[local][torch] torch:", torch.__version__)
 print("[local][torch] cuda available:", torch.cuda.is_available())
@@ -180,7 +196,23 @@ for spec in "${RUNS[@]}"; do
     TEST_ARGS=(--test_root_dir "${TEST_ROOT_DIR}")
   fi
 
-  python -u "${INFER_PY}"     --root_dir "${ROOT_DIR}"     "${TEST_ARGS[@]}"     "${STATION_ARGS[@]}"     --station_json_dir "${STATION_JSON_DIR}"     --model "${MODEL}"     --history_hours "${HISTORY_HOURS}"     --batch_size "${BATCH_SIZE}"     --ckpt "${CKPT_RESOLVED}"     --out_dir "${OUT_DIR}"     --save_npz     "${YEARS_ARGS[@]}"     "${AMP_ARGS[@]}"     "${TF32_ARGS[@]}"     "${THREAD_ARGS[@]}"     "${DL_ARGS[@]}"     2>&1 | tee -a "${LOG_FILE}"
+  "${PYTHON_BIN}" -u "${INFER_PY}" \
+    --root_dir "${ROOT_DIR}" \
+    "${TEST_ARGS[@]}" \
+    "${STATION_ARGS[@]}" \
+    --station_json_dir "${STATION_JSON_DIR}" \
+    --model "${MODEL}" \
+    --history_hours "${HISTORY_HOURS}" \
+    --batch_size "${BATCH_SIZE}" \
+    --ckpt "${CKPT_RESOLVED}" \
+    --out_dir "${OUT_DIR}" \
+    --save_npz \
+    "${YEARS_ARGS[@]}" \
+    "${AMP_ARGS[@]}" \
+    "${TF32_ARGS[@]}" \
+    "${THREAD_ARGS[@]}" \
+    "${DL_ARGS[@]}" \
+    2>&1 | tee -a "${LOG_FILE}"
 
   echo "[DONE RUN] outputs in: ${OUT_DIR}" | tee -a "${LOG_FILE}"
 done

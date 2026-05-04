@@ -58,6 +58,21 @@ set -u
 : "${SEED:=42}"
 : "${TRAIN_RATIO:=0.6}"
 : "${VAL_RATIO:=0.2}"
+: "${SHUFFLE_YEARS:=0}"
+: "${FUTURE_ONLY:=0}"
+: "${FUTURE_YEAR_THRESHOLD:=2030}"
+
+case "${SHUFFLE_YEARS,,}" in
+  1|true|yes|y|on) SHUFFLE_YEARS=1 ;;
+  0|false|no|n|off) SHUFFLE_YEARS=0 ;;
+  *) echo "[FATAL] SHUFFLE_YEARS must be 0/1 or true/false; got '${SHUFFLE_YEARS}'"; exit 1 ;;
+esac
+
+case "${FUTURE_ONLY,,}" in
+  1|true|yes|y|on) FUTURE_ONLY=1 ;;
+  0|false|no|n|off) FUTURE_ONLY=0 ;;
+  *) echo "[FATAL] FUTURE_ONLY must be 0/1 or true/false; got '${FUTURE_ONLY}'"; exit 1 ;;
+esac
 
 # Arrays (declare if missing)
 if [[ -z "${LR_LIST+x}" ]]; then LR_LIST=("3e-3"); fi
@@ -110,20 +125,20 @@ if [[ -z "${SLOPE_MASK_S_LIST+x}" ]]; then SLOPE_MASK_S_LIST=("0.10"); fi
 : "${MP_CONTEXT:=fork}"
 
 # Optional tmux wrapper
-: "${USE_TMUX:=${USE_TMUX:-0}}"
+: "${USE_TMUX:=${USE_TMUX:-1}}"
 
 # Optional conda activation
-: "${DO_CONDA:=0}"
-: "${CONDA_SH:=}"
-: "${CONDA_ENV_1:=base}"
-: "${CONDA_ENV_2:=}"
+: "${DO_CONDA:=1}"
+: "${CONDA_MODULE:=anaconda}"
+: "${CONDA_SH:=/software/u22/anaconda/python3.9/etc/profile.d/conda.sh}"
+: "${CONDA_ENV:=torchpyg-cu124}"
 
 # p_mean ablation knobs (optional)
 : "${USE_PMEAN:=0}"
 : "${PMEAN_DIM:=32}"
 : "${PERCEIVER_PMEAN_MODE:=tokens}"
 
-# Perceiver3 knobs (only used when MODEL=perceiver3)
+# Perceiver3 knobs (used when MODEL=perceiver3 or perceiver3_cnn)
 : "${GATE_MODE:=window}"
 : "${GATE_BIAS_INIT:=-2.0}"
 : "${TAIL_TANH_CLIP:=2.5}"
@@ -142,15 +157,25 @@ if [[ -z "${SLOPE_MASK_S_LIST+x}" ]]; then SLOPE_MASK_S_LIST=("0.10"); fi
 if [[ "${DO_CONDA}" -eq 1 ]]; then
   if [[ -f "${CONDA_SH}" ]]; then
     set +u
+    if command -v module >/dev/null 2>&1; then
+      module load "${CONDA_MODULE}" || echo "[WARN] module load ${CONDA_MODULE} failed. Continuing with CONDA_SH=${CONDA_SH}."
+    else
+      echo "[WARN] module command not found. Continuing with CONDA_SH=${CONDA_SH}."
+    fi
     # shellcheck disable=SC1090
     source "${CONDA_SH}"
-    export CONDA_PKGS_DIRS=/work/09575/"$USER"/conda_pkgs
-    conda activate "${CONDA_ENV_1}" >/dev/null 2>&1 || true
-    conda activate "${CONDA_ENV_2}"
+    conda activate "${CONDA_ENV}"
+    hash -r
     set -u
   else
     echo "[WARN] conda.sh not found at ${CONDA_SH}. Skipping conda activation."
   fi
+fi
+
+if [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
+  PYTHON_BIN="${CONDA_PREFIX}/bin/python"
+else
+  PYTHON_BIN="$(command -v python)"
 fi
 
 # =========================
@@ -213,11 +238,10 @@ unset NCCL_ASYNC_ERROR_HANDLING
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_DISTRIBUTED_DEBUG=OFF
 
-if command -v torchrun >/dev/null 2>&1; then
-  TORCH_LAUNCH=(torchrun --nproc_per_node="${num_gpus}" --master_addr="${MASTER_ADDR}" --master_port="${MASTER_PORT}")
-else
-  TORCH_LAUNCH=(python -m torch.distributed.run --nproc_per_node="${num_gpus}" --master_addr="${MASTER_ADDR}" --master_port="${MASTER_PORT}")
-fi
+# Use the active Python interpreter for DDP launch so we stay inside the
+# currently activated conda environment even if PATH or shell hashing points
+# somewhere unexpected.
+TORCH_LAUNCH=("${PYTHON_BIN}" -m torch.distributed.run --nproc_per_node="${num_gpus}" --master_addr="${MASTER_ADDR}" --master_port="${MASTER_PORT}")
 
 # =========================
 # Launcher logging
@@ -225,6 +249,7 @@ fi
 WORKDIR="$(pwd)"
 RUNSTAMP="$(date +"%Y%m%d_%H%M%S")"
 LOG_ROOT="launcher_logs_${STATION:-ALL}"
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then
   SWEEP_DIR="${WORKDIR}/${LOG_ROOT}/idev_${SLURM_JOB_ID}_${RUNSTAMP}"
@@ -248,6 +273,7 @@ echo "TEST_DATA_TAG: ${TEST_DATA_TAG}"
 echo "LR_LIST:       ${LR_LIST[*]}"
 echo "Loss modes:    ${LOSS_MODE_LIST[*]}"
 echo "H_LIST:        ${HISTORY_HOURS_LIST[*]}"
+echo "Split:         train=${TRAIN_RATIO} val=${VAL_RATIO} shuffle_years=${SHUFFLE_YEARS} future_only=${FUTURE_ONLY} future_year_threshold=${FUTURE_YEAR_THRESHOLD} seed=${SEED}"
 echo "MASTER_ADDR:   ${MASTER_ADDR}"
 echo "MASTER_PORT:   ${MASTER_PORT}"
 echo "SLURM_JOB_ID:  ${SLURM_JOB_ID:-<none>}"
@@ -262,10 +288,19 @@ echo "========================================="
 # =========================
 # Optional: tmux wrapper
 # =========================
-if [[ "${USE_TMUX}" == "1" ]] && command -v tmux >/dev/null 2>&1; then
+TMUX_INNER=0
+if [[ "${1:-}" == "${CONFIG_PATH}" && "${2:-}" == "--_tmux_inner" ]]; then
+  TMUX_INNER=1
+elif [[ "${1:-}" == "--_tmux_inner" ]]; then
+  TMUX_INNER=1
+fi
+
+if [[ "${USE_TMUX}" == "1" && "${TMUX_INNER}" == "0" ]] && command -v tmux >/dev/null 2>&1; then
   SESSION_NAME="stormsurge_${RUNSTAMP}"
+  printf -v TMUX_INNER_CMD 'bash %q %q --_tmux_inner; status=$?; if [[ ${status} -ne 0 ]]; then echo; echo "[tmux] train.sh exited with status ${status}. Type exit or press Ctrl-D to close."; exec bash; fi' "${SCRIPT_PATH}" "${CONFIG_PATH}"
+  printf -v TMUX_CMD 'bash -lc %q' "${TMUX_INNER_CMD}"
   echo "[INFO] launching inside tmux session: ${SESSION_NAME}"
-  tmux new-session -d -s "${SESSION_NAME}" -c "${WORKDIR}" "$0" "${CONFIG_PATH}" --_tmux_inner
+  tmux new-session -d -s "${SESSION_NAME}" -c "${WORKDIR}" "${TMUX_CMD}"
   echo "Attach: tmux attach -t ${SESSION_NAME}"
   echo "Logs:   ${SWEEP_DIR}"
   exit 0
@@ -282,17 +317,25 @@ fi
 # =========================
 EXTRA_TAG=""
 case "${MODEL}" in
-  baseline)   EXTRA_TAG="" ;;
-  perceiver3) EXTRA_TAG="_nrh${NODE_READ_HEADS}_trh${TIME_READ_HEADS}_L${TRANSFORMER_LAYERS}_ff${TRANSFORMER_FF_MULT}_td${TRANSFORMER_DROPOUT}_gm${GATE_MODE}" ;;
-  *) echo "[FATAL] Unknown MODEL='${MODEL}'. Use baseline|perceiver3"; exit 1 ;;
+  baseline|spatial_mlp_0h|temporal_cnn_12h|temporal_lstm_12h) EXTRA_TAG="" ;;
+  perceiver3|perceiver3_cnn) EXTRA_TAG="_nrh${NODE_READ_HEADS}_trh${TIME_READ_HEADS}_L${TRANSFORMER_LAYERS}_ff${TRANSFORMER_FF_MULT}_td${TRANSFORMER_DROPOUT}_gm${GATE_MODE}" ;;
+  *) echo "[FATAL] Unknown MODEL='${MODEL}'. Use baseline|spatial_mlp_0h|temporal_cnn_12h|temporal_lstm_12h|perceiver3|perceiver3_cnn"; exit 1 ;;
 esac
 
 PMEAN_TAG=""
 if [[ "${USE_PMEAN}" == "1" ]]; then
   PMEAN_TAG="_pmean${PMEAN_DIM}"
-  if [[ "${MODEL}" == "perceiver3" ]]; then
+  if [[ "${MODEL}" == "perceiver3" || "${MODEL}" == "perceiver3_cnn" ]]; then
     PMEAN_TAG+="_${PERCEIVER_PMEAN_MODE}"
   fi
+fi
+
+SPLIT_TAG=""
+if [[ "${SHUFFLE_YEARS}" == "1" ]]; then
+  SPLIT_TAG="_yshuffle"
+fi
+if [[ "${FUTURE_ONLY}" == "1" ]]; then
+  SPLIT_TAG+="_futuregt${FUTURE_YEAR_THRESHOLD}"
 fi
 
 # =========================
@@ -355,7 +398,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
                 SCHED_ARGS+=(--rop_metric "${ROP_METRIC}")
               fi
 
-              RUN_TAG="${STATION:-ALL}_${TRAIN_DATA_TAG}to${TEST_DATA_TAG}_${MODEL}${EXTRA_TAG}${PMEAN_TAG}${LOSS_TAG2}_hist${H}h_hid${HIDDEN_CHANNELS}_L${NUM_LAYERS}_bs${BATCH_SIZE}_lr${LR_CUR}_ep${EPOCHS}_sch${SCHEDULER}_xn${X_NORM}"
+              RUN_TAG="${STATION:-ALL}_${TRAIN_DATA_TAG}to${TEST_DATA_TAG}_${MODEL}${EXTRA_TAG}${PMEAN_TAG}${SPLIT_TAG}${LOSS_TAG2}_hist${H}h_hid${HIDDEN_CHANNELS}_L${NUM_LAYERS}_bs${BATCH_SIZE}_lr${LR_CUR}_ep${EPOCHS}_sch${SCHEDULER}_xn${X_NORM}"
               LOG_FILE="${SWEEP_DIR}/train_${RUN_TAG}.log"
               : > "${LOG_FILE}"
 
@@ -374,6 +417,9 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
                 --seed "${SEED}"
                 --train_ratio "${TRAIN_RATIO}"
                 --val_ratio "${VAL_RATIO}"
+                --shuffle_years "${SHUFFLE_YEARS}"
+                --future_only "${FUTURE_ONLY}"
+                --future_year_threshold "${FUTURE_YEAR_THRESHOLD}"
                 --run_tag "${RUN_TAG}_${RUNSTAMP}"
                 --torch_threads "${TORCH_THREADS}"
                 --num_workers "${NUM_WORKERS}"
@@ -397,7 +443,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
               # p_mean injection (ablation)
               if [[ "${USE_PMEAN}" == "1" ]]; then
                 BASE_CMD+=(--use_pmean --pmean_dim "${PMEAN_DIM}")
-                if [[ "${MODEL}" == "perceiver3" ]]; then
+                if [[ "${MODEL}" == "perceiver3" || "${MODEL}" == "perceiver3_cnn" ]]; then
                   BASE_CMD+=(--perceiver_pmean_mode "${PERCEIVER_PMEAN_MODE}")
                 fi
               fi
@@ -417,7 +463,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
               fi
 
               # Model-specific knobs
-              if [[ "${MODEL}" == "perceiver3" ]]; then
+              if [[ "${MODEL}" == "perceiver3" || "${MODEL}" == "perceiver3_cnn" ]]; then
                 BASE_CMD+=(--node_read_heads "${NODE_READ_HEADS}"
                            --time_read_heads "${TIME_READ_HEADS}"
                            --transformer_layers "${TRANSFORMER_LAYERS}"

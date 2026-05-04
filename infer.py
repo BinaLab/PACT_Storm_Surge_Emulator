@@ -29,7 +29,15 @@ from emulator.data import (
     station_features_from_json,
 )
 from emulator.inference import classify_past_future, infer_one_loader, parse_year_tag
-from emulator.models import PACT, SpatialOnlyGraphSAGEBatch, SpatioTemporalGraphSAGEBatch
+from emulator.models import (
+    PACT,
+    PACTCNN,
+    SpatialMLP0h,
+    SpatialOnlyGraphSAGEBatch,
+    SpatioTemporalGraphSAGEBatch,
+    TemporalCNN12h,
+    TemporalLSTM12h,
+)
 
 
 warnings.filterwarnings(
@@ -63,7 +71,7 @@ def main():
 
     # overrides
     # >>> INJECTED: keep model choices consistent with current train.py
-    parser.add_argument("--model", type=str, default="", choices=["", "baseline", "perceiver3"])
+    parser.add_argument("--model", type=str, default="", choices=["", "baseline", "spatial_mlp_0h", "temporal_cnn_12h", "temporal_lstm_12h", "perceiver3", "perceiver3_cnn"])
     # <<< END INJECTED
     parser.add_argument("--history_hours", type=int, default=-1, help="Override history_hours; -1 uses ckpt args")
     parser.add_argument("--tf32", action="store_true")
@@ -183,7 +191,7 @@ def main():
 
     # station feature (for perceiver3)
     station_feat = None
-    if model_name == "perceiver3" and station_key is not None:
+    if model_name in ("perceiver3", "perceiver3_cnn") and station_key is not None:
         st_json = _try_load_station_json(args.station_json_dir, station_key)
         if st_json is None:
             print(f"[WARN] station JSON not found for '{station_key}'. Using learned station token only.", flush=True)
@@ -258,15 +266,54 @@ def main():
                 pmean_T=W,
                 pmean_dim=pmean_dim,
             )
-    elif model_name == "perceiver3":
+    elif model_name == "spatial_mlp_0h":
         if history_steps == 0:
-            raise ValueError("perceiver3 requires history>0")
+            model = SpatialMLP0h(
+                in_channels,
+                hidden_channels,
+                out_channels,
+                dropout=dropout,
+                use_pmean=use_pmean,
+                pmean_dim=pmean_dim,
+            )
+        else:
+            raise ValueError("spatial_mlp_0h requires history_hours=0.")
+    elif model_name == "temporal_cnn_12h":
+        if history_hours != 12:
+            raise ValueError("temporal_cnn_12h requires history_hours=12.")
+        W = history_steps + 1
+        model = TemporalCNN12h(
+            in_channels,
+            hidden_channels,
+            out_channels,
+            dropout=dropout,
+            use_pmean=use_pmean,
+            pmean_T=W,
+            pmean_dim=pmean_dim,
+        )
+    elif model_name == "temporal_lstm_12h":
+        if history_hours != 12:
+            raise ValueError("temporal_lstm_12h requires history_hours=12.")
+        W = history_steps + 1
+        model = TemporalLSTM12h(
+                in_channels,
+                hidden_channels,
+                out_channels,
+                dropout=dropout,
+                use_pmean=use_pmean,
+                pmean_T=W,
+                pmean_dim=pmean_dim,
+            )
+    elif model_name in ("perceiver3", "perceiver3_cnn"):
+        if history_steps == 0:
+            raise ValueError(f"{model_name} requires history>0")
         station_feat_dim = int(station_feat.numel()) if station_feat is not None else 0
 
         use_tokens = bool(use_pmean) and (perceiver_pmean_mode in ("tokens", "both"))
         use_global = bool(use_pmean) and (perceiver_pmean_mode in ("global", "both"))
 
-        model = PACT(
+        model_cls = PACT if model_name == "perceiver3" else PACTCNN
+        model = model_cls(
             in_channels=in_channels,
             hidden_channels=hidden_channels,
             out_channels=out_channels,
@@ -290,7 +337,11 @@ def main():
             pmean_dim=pmean_dim,
         )
     else:
-        raise ValueError(f"infer.py currently supports model=baseline/perceiver3, got {model_name}")
+        raise ValueError(
+            "infer.py currently supports model="
+            "baseline/spatial_mlp_0h/temporal_cnn_12h/temporal_lstm_12h/perceiver3/perceiver3_cnn, "
+            f"got {model_name}"
+        )
 
     model = model.to(device)
     model.load_state_dict(ckpt["model_state_dict"], strict=True)

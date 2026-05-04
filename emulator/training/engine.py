@@ -17,6 +17,10 @@ from emulator.data.normalization import normalize_inputs_inplace, normalize_targ
 from emulator.training.losses import slope_matching_loss_softmask, weighted_mse_loss
 
 
+def _is_perceiver_family(model_name: str) -> bool:
+    return str(model_name) in ("perceiver3", "perceiver3_cnn")
+
+
 def train_one_epoch_ddp(
     model,
     loader,
@@ -95,7 +99,7 @@ def train_one_epoch_ddp(
 
         if use_amp:
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                if model_name == "perceiver3":
+                if _is_perceiver_family(model_name):
                     pred_norm = model(batch, station_feat=station_feat, return_aux=False)
                 else:
                     pred_norm = model(batch)
@@ -155,7 +159,7 @@ def train_one_epoch_ddp(
                 loss.backward()
                 optimizer.step()
         else:
-            if model_name == "perceiver3":
+            if _is_perceiver_family(model_name):
                 pred_norm = model(batch, station_feat=station_feat, return_aux=False)
             else:
                 pred_norm = model(batch)
@@ -223,12 +227,9 @@ def train_one_epoch_ddp(
         total_mae_phys_sum += float(mae_phys.item()) * bs
         total_samples += bs
 
-        if model_name == "perceiver3":
+        if _is_perceiver_family(model_name):
             with torch.no_grad():
-                if model_name == "perceiver3":
-                    _, aux = model(batch, station_feat=station_feat, return_aux=True)
-                else:
-                    _, aux = model(batch, return_aux=True)
+                _, aux = model(batch, station_feat=station_feat, return_aux=True)
                 g = aux.get("gate_mean_per_sample", None)
                 if g is not None:
                     gate_sum += float(g.mean().item()) * bs
@@ -250,7 +251,7 @@ def train_one_epoch_ddp(
     rmse_phys = float(np.sqrt(mse_phys))
 
     gate_mean_train = None
-    if model_name == "perceiver3" and gate_count > 0:
+    if _is_perceiver_family(model_name) and gate_count > 0:
         gate_mean_train = gate_sum / gate_count
 
     return mse_norm, mse_phys, rmse_phys, mae_phys, gate_mean_train
@@ -300,13 +301,13 @@ def evaluate_ddp(
 
         if use_amp:
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                if model_name == "perceiver3":
+                if _is_perceiver_family(model_name):
                     pred_norm = model(batch, station_feat=station_feat, return_aux=False)
                 else:
                     pred_norm = model(batch)
             pred_phys = pred_norm.float() * y_std + y_mean
         else:
-            if model_name == "perceiver3":
+            if _is_perceiver_family(model_name):
                 pred_norm = model(batch, station_feat=station_feat, return_aux=False)
             else:
                 pred_norm = model(batch)
@@ -388,12 +389,12 @@ def collect_test_preds_unnorm(
 
         if use_amp:
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                if model_name == "perceiver3":
+                if _is_perceiver_family(model_name):
                     pred_norm = model_raw(batch, station_feat=station_feat, return_aux=False)
                 else:
                     pred_norm = model_raw(batch)
         else:
-            if model_name == "perceiver3":
+            if _is_perceiver_family(model_name):
                 pred_norm = model_raw(batch, station_feat=station_feat, return_aux=False)
             else:
                 pred_norm = model_raw(batch)
@@ -474,13 +475,13 @@ def eval_full_metrics_and_logs(
 
         if use_amp:
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                if model_name == "perceiver3":
+                if _is_perceiver_family(model_name):
                     pred_norm, aux = model_raw(batch, station_feat=station_feat, return_aux=True)
                 else:
                     pred_norm = model_raw(batch)
                     aux = {}
         else:
-            if model_name == "perceiver3":
+            if _is_perceiver_family(model_name):
                 pred_norm, aux = model_raw(batch, station_feat=station_feat, return_aux=True)
             else:
                 pred_norm = model_raw(batch)
@@ -500,7 +501,7 @@ def eval_full_metrics_and_logs(
         if "gate_mean_per_sample" in aux:
             aux_gate.append(aux["gate_mean_per_sample"].detach().float().cpu())
 
-        if model_name == "perceiver3":
+        if _is_perceiver_family(model_name):
             aux_node_max.append(aux["node_attn_max_per_sample"].detach().float().cpu())
             aux_node_ent.append(aux["node_attn_entropy_per_sample"].detach().float().cpu())
             aux_time_recent.append(aux["time_attn_recent_per_sample"].detach().float().cpu())
@@ -536,7 +537,7 @@ def eval_full_metrics_and_logs(
         mae_peak=mae_peak,
     )
 
-    if model_name == "perceiver3":
+    if _is_perceiver_family(model_name):
         logs["gate_mean_all"] = _mean_over(all_idx, aux_gate)
         logs["gate_mean_peak"] = _mean_over(peak_idx, aux_gate)
         logs["node_attn_max_all"] = _mean_over(all_idx, aux_node_max)

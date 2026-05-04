@@ -57,7 +57,15 @@ from emulator.data import (
     station_features_from_json,
     years_from_indices,
 )
-from emulator.models import PACT, SpatialOnlyGraphSAGEBatch, SpatioTemporalGraphSAGEBatch
+from emulator.models import (
+    PACT,
+    PACTCNN,
+    SpatialMLP0h,
+    SpatialOnlyGraphSAGEBatch,
+    SpatioTemporalGraphSAGEBatch,
+    TemporalCNN12h,
+    TemporalLSTM12h,
+)
 from emulator.training import (
     collect_test_preds_unnorm,
     eval_full_metrics_and_logs,
@@ -75,6 +83,14 @@ warnings.filterwarnings(
 def main():
     parser = argparse.ArgumentParser()
 
+    def _bool_int(value):
+        v = str(value).strip().lower()
+        if v in ("1", "true", "yes", "y", "on"):
+            return 1
+        if v in ("0", "false", "no", "n", "off"):
+            return 0
+        raise argparse.ArgumentTypeError("expected one of: 0/1, true/false, yes/no, on/off")
+
     # -------------------------
     # Data roots
     # -------------------------
@@ -91,6 +107,30 @@ def main():
     # Split args
     parser.add_argument("--train_ratio", type=float, default=0.6)
     parser.add_argument("--val_ratio", type=float, default=0.2)
+    parser.add_argument(
+        "--shuffle_years",
+        "--shuffle_split_years",
+        dest="shuffle_years",
+        type=_bool_int,
+        default=0,
+        choices=[0, 1],
+        help="If 1, shuffle year groups with --seed before train/val/test ratio split.",
+    )
+    parser.add_argument(
+        "--future_only",
+        "--future_only_years",
+        dest="future_only",
+        type=_bool_int,
+        default=0,
+        choices=[0, 1],
+        help="If 1, keep only year tags with any year component > --future_year_threshold before ratio split.",
+    )
+    parser.add_argument(
+        "--future_year_threshold",
+        type=int,
+        default=2030,
+        help="Year threshold used by --future_only; default keeps tags containing years after 2030.",
+    )
 
     # -------------------------
     # Training knobs
@@ -219,7 +259,7 @@ def main():
     # Model selection
     # -------------------------
     parser.add_argument("--model", type=str, default="baseline",
-                        choices=["baseline", "perceiver3"])
+                        choices=["baseline", "spatial_mlp_0h", "temporal_cnn_12h", "temporal_lstm_12h", "perceiver3", "perceiver3_cnn"])
 
     # -------------------------
     # OPTIONAL: p_mean injection (ablation knob)
@@ -422,9 +462,42 @@ def main():
     # -------------------------
     store = ForcingGraphStore(args.root_dir, pattern="*graphs.pt", log_fn=print0)
 
-    train_idx = make_year_split_indices(store, part="train", station_filter=station_key, train_frac=args.train_ratio, val_frac=args.val_ratio, log_fn=print0)
-    val_idx   = make_year_split_indices(store, part="val",   station_filter=station_key, train_frac=args.train_ratio, val_frac=args.val_ratio, log_fn=print0)
-    test_idx  = make_year_split_indices(store, part="test",  station_filter=station_key, train_frac=args.train_ratio, val_frac=args.val_ratio, log_fn=print0)
+    train_idx = make_year_split_indices(
+        store,
+        part="train",
+        station_filter=station_key,
+        train_frac=args.train_ratio,
+        val_frac=args.val_ratio,
+        shuffle_years=bool(args.shuffle_years),
+        future_only=bool(args.future_only),
+        future_year_threshold=args.future_year_threshold,
+        split_seed=args.seed,
+        log_fn=print0,
+    )
+    val_idx = make_year_split_indices(
+        store,
+        part="val",
+        station_filter=station_key,
+        train_frac=args.train_ratio,
+        val_frac=args.val_ratio,
+        shuffle_years=bool(args.shuffle_years),
+        future_only=bool(args.future_only),
+        future_year_threshold=args.future_year_threshold,
+        split_seed=args.seed,
+        log_fn=print0,
+    )
+    test_idx = make_year_split_indices(
+        store,
+        part="test",
+        station_filter=station_key,
+        train_frac=args.train_ratio,
+        val_frac=args.val_ratio,
+        shuffle_years=bool(args.shuffle_years),
+        future_only=bool(args.future_only),
+        future_year_threshold=args.future_year_threshold,
+        split_seed=args.seed,
+        log_fn=print0,
+    )
 
     # External test store (e.g., CMIP6)
     store_test = None
@@ -759,19 +832,32 @@ def main():
                    "Model injection will be skipped. Did you run preprocessing/time_align with p_mean saving enabled?")
 
     if history_steps == 0:
-        if model_name != "baseline":
-            raise ValueError(f"--model {model_name} requires history>0. Use --model baseline for history=0.")
-        print0("[Model] SpatialOnlyGraphSAGEBatch (history=0)")
-        model = SpatialOnlyGraphSAGEBatch(
-            in_channels=in_channels,
-            hidden_channels=args.hidden_channels,
-            out_channels=out_channels,
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-            # p_mean injection: optional p_mean usage (ablation)
-            use_pmean=bool(args.use_pmean),
-            pmean_dim=int(args.pmean_dim),
-        ).to(device)
+        if model_name == "baseline":
+            print0("[Model] SpatialOnlyGraphSAGEBatch (history=0)")
+            model = SpatialOnlyGraphSAGEBatch(
+                in_channels=in_channels,
+                hidden_channels=args.hidden_channels,
+                out_channels=out_channels,
+                num_layers=args.num_layers,
+                dropout=args.dropout,
+                # p_mean injection: optional p_mean usage (ablation)
+                use_pmean=bool(args.use_pmean),
+                pmean_dim=int(args.pmean_dim),
+            ).to(device)
+        elif model_name == "spatial_mlp_0h":
+            print0("[Model] SpatialMLP0h")
+            model = SpatialMLP0h(
+                in_channels=in_channels,
+                hidden_channels=args.hidden_channels,
+                out_channels=out_channels,
+                dropout=args.dropout,
+                use_pmean=bool(args.use_pmean),
+                pmean_dim=int(args.pmean_dim),
+            ).to(device)
+        else:
+            raise ValueError(
+                f"--model {model_name} requires history>0, except for baseline/spatial_mlp_0h at history=0."
+            )
     else:
         if model_name == "baseline":
             print0("[Model] SpatioTemporalGraphSAGEBatch + LSTM (baseline)")
@@ -787,11 +873,38 @@ def main():
                 pmean_T=int(history_steps + 1),
                 pmean_dim=int(args.pmean_dim),
             ).to(device)
+        elif model_name == "temporal_cnn_12h":
+            if args.history_hours != 12:
+                raise ValueError("--model temporal_cnn_12h requires --history_hours 12.")
+            print0("[Model] TemporalCNN12h")
+            model = TemporalCNN12h(
+                in_channels=in_channels,
+                hidden_channels=args.hidden_channels,
+                out_channels=out_channels,
+                dropout=args.dropout,
+                use_pmean=bool(args.use_pmean),
+                pmean_T=int(history_steps + 1),
+                pmean_dim=int(args.pmean_dim),
+            ).to(device)
+        elif model_name == "temporal_lstm_12h":
+            if args.history_hours != 12:
+                raise ValueError("--model temporal_lstm_12h requires --history_hours 12.")
+            print0("[Model] TemporalLSTM12h")
+            model = TemporalLSTM12h(
+                in_channels=in_channels,
+                hidden_channels=args.hidden_channels,
+                out_channels=out_channels,
+                dropout=args.dropout,
+                use_pmean=bool(args.use_pmean),
+                pmean_T=int(history_steps + 1),
+                pmean_dim=int(args.pmean_dim),
+            ).to(device)
 
-        elif model_name == "perceiver3":
+        elif model_name in ("perceiver3", "perceiver3_cnn"):
             station_feat_dim = int(station_feat.numel()) if (station_feat is not None) else 0
-            print0("[Model] Perceiver-like Model3")
-            model = PACT(
+            print0("[Model] Perceiver-like Model3" if model_name == "perceiver3" else "[Model] Perceiver-like Model3 + CNN encoder")
+            model_cls = PACT if model_name == "perceiver3" else PACTCNN
+            model = model_cls(
                 in_channels=in_channels,
                 hidden_channels=args.hidden_channels,
                 out_channels=out_channels,
@@ -906,12 +1019,12 @@ def main():
         else:
             loss_parts += [f"del{float(args.slope_huber_delta):g}"]
 
-    if args.model == "perceiver3":
+    if args.model in ("perceiver3", "perceiver3_cnn"):
         loss_parts += [f"gm{args.gate_mode}"]
 
     # p_mean injection: include p_mean injection mode in run tag (for clean ablations)
     if bool(args.use_pmean):
-        if args.model == "perceiver3":
+        if args.model in ("perceiver3", "perceiver3_cnn"):
             loss_parts += [f"pmean{args.perceiver_pmean_mode}"]
         else:
             loss_parts += ["pmean"]

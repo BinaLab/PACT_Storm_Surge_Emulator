@@ -44,6 +44,10 @@ set -u
 : "${CUDA_LAUNCH_BLOCKING_FLAG:=0}"
 : "${TORCH_GPU_PROBE:=0}"
 : "${FAIL_IF_NO_SLURM:=0}"
+: "${DO_CONDA:=1}"
+: "${CONDA_MODULE:=anaconda}"
+: "${CONDA_SH:=/software/u22/anaconda/python3.9/etc/profile.d/conda.sh}"
+: "${CONDA_ENV:=torchpyg-cu124}"
 
 # Speed defaults (if not set in config)
 : "${USE_AMP:=1}"
@@ -51,14 +55,37 @@ set -u
 : "${USE_TF32:=1}"
 : "${TORCH_THREADS:=1}"
 
-: "${NUM_WORKERS:=2}"
-: "${PIN_MEMORY:=1}"
-: "${PERSISTENT_WORKERS:=1}"
-: "${PREFETCH_FACTOR:=4}"
+: "${NUM_WORKERS:=0}"
+: "${PIN_MEMORY:=0}"
+: "${PERSISTENT_WORKERS:=0}"
+: "${PREFETCH_FACTOR:=0}"
 : "${MP_CONTEXT:=fork}"
 
 # Required
 : "${CKPT_PATH:=}"
+
+init_conda () {
+  if [[ "${DO_CONDA}" -ne 1 ]]; then
+    return 0
+  fi
+  if [[ ! -f "${CONDA_SH}" ]]; then
+    echo "[WARN] conda.sh not found at ${CONDA_SH}. Skipping conda activation."
+    return 0
+  fi
+  set +u
+  module load "${CONDA_MODULE}"
+  # shellcheck disable=SC1090
+  source "${CONDA_SH}"
+  conda activate "${CONDA_ENV}"
+  hash -r
+  set -u
+}
+
+if [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
+  PYTHON_BIN="${CONDA_PREFIX}/bin/python"
+else
+  PYTHON_BIN="$(command -v python)"
+fi
 
 # =========================
 # Helper: resolve checkpoint path (supports glob patterns)
@@ -151,28 +178,48 @@ set -u
 : "\${CUDA_LAUNCH_BLOCKING_FLAG:=0}"
 : "\${TORCH_GPU_PROBE:=0}"
 : "\${FAIL_IF_NO_SLURM:=0}"
+: "\${DO_CONDA:=1}"
+: "\${CONDA_MODULE:=anaconda}"
+: "\${CONDA_SH:=/software/u22/anaconda/python3.9/etc/profile.d/conda.sh}"
+: "\${CONDA_ENV:=torchpyg-cu124}"
 
 : "\${USE_AMP:=1}"
 : "\${AMP_DTYPE:=bf16}"
 : "\${USE_TF32:=1}"
 : "\${TORCH_THREADS:=1}"
 
-: "\${NUM_WORKERS:=2}"
-: "\${PIN_MEMORY:=1}"
-: "\${PERSISTENT_WORKERS:=1}"
-: "\${PREFETCH_FACTOR:=4}"
+: "\${NUM_WORKERS:=0}"
+: "\${PIN_MEMORY:=0}"
+: "\${PERSISTENT_WORKERS:=0}"
+: "\${PREFETCH_FACTOR:=0}"
 : "\${MP_CONTEXT:=fork}"
 
 : "\${CKPT_PATH:=}"
 
-# Activate env inside tmux (as in your original infer.sh)
-set +u
-# shellcheck disable=SC1090
-source "\${CONDA_SH}"
-export CONDA_PKGS_DIRS=/work/09575/\$USER/conda_pkgs
-conda activate "\${CONDA_ENV_1}" >/dev/null 2>&1 || true
-conda activate "\${CONDA_ENV_2}"
-set -u
+init_conda () {
+  if [[ "\${DO_CONDA}" -ne 1 ]]; then
+    return 0
+  fi
+  if [[ ! -f "\${CONDA_SH}" ]]; then
+    echo "[WARN] conda.sh not found at \${CONDA_SH}. Skipping conda activation."
+    return 0
+  fi
+  set +u
+  module load "\${CONDA_MODULE}"
+  # shellcheck disable=SC1090
+  source "\${CONDA_SH}"
+  conda activate "\${CONDA_ENV}"
+  hash -r
+  set -u
+}
+
+init_conda
+
+if [[ -n "\${CONDA_PREFIX:-}" && -x "\${CONDA_PREFIX}/bin/python" ]]; then
+  PYTHON_BIN="\${CONDA_PREFIX}/bin/python"
+else
+  PYTHON_BIN="\$(command -v python)"
+fi
 
 export PYTHONUNBUFFERED=1
 
@@ -224,7 +271,7 @@ LOG_FILE="${RUN_DIR}/infer_\${STATION}_${TEST_TAG}_\${MODEL}_hist\${HISTORY_HOUR
   fi
 
   if [[ "\${TORCH_GPU_PROBE}" -eq 1 ]]; then
-    python - <<'PY'
+    "\${PYTHON_BIN}" - <<'PY'
 import torch
 print("[tmux][torch] torch:", torch.__version__)
 print("[tmux][torch] cuda available:", torch.cuda.is_available())
@@ -267,7 +314,7 @@ if [[ "\${PERSISTENT_WORKERS}" -eq 1 ]]; then DL_ARGS+=(--persistent_workers); f
 THREAD_ARGS=(--torch_threads "\${TORCH_THREADS}")
 
 # IMPORTANT: pass ONLY args that exist in infer.py
-python -u "\${INFER_PY}" \\
+"\${PYTHON_BIN}" -u "\${INFER_PY}" \\
   --root_dir "\${ROOT_DIR}" \\
   "\${TEST_ARGS[@]}" \\
   "\${STATION_ARGS[@]}" \\
