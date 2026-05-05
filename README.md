@@ -1,5 +1,7 @@
 # PACT Storm-Surge Emulator
 
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 PACT is a config-driven PyTorch Geometric workflow for station-level storm-surge forecasting. It trains and evaluates graph neural emulators on NCEP and CMIP6 forcing graphs, with launchers for single-checkpoint evaluation and multi-dataset sweeps.
 
 The repository currently supports two model families:
@@ -8,6 +10,12 @@ The repository currently supports two model families:
 | --- | --- |
 | `baseline` | GraphSAGE baseline. With `HISTORY_HOURS=0`, it is spatial only; with history, it uses a graph encoder plus an LSTM temporal head. |
 | `perceiver3` | PACT, a peak-aware cross-attention graph transformer for history-aware surge forecasting. |
+
+## Authors and Collaboration
+
+- Author: Zesheng Liu
+- Developed in collaboration with Doyup Kwon(Princeton), Ning Lin(Princeton), and Maryam Rahnemoonfar(Lehigh University)
+- Corresponding Author: Maryam Rahnemoonfar(maryam@lehigh.edu)
 
 ## Repository Layout
 
@@ -294,3 +302,9 @@ python -u infer.py \
 - Missing station metadata warning: add the station JSON file or confirm the model can run without station features.
 - Conda activation warning: update `CONDA_SH`, set `CONDA_ENV`, or set `DO_CONDA=0` in the selected config.
 - Inference is only running a few years: clear or edit `YEARS` in the selected config/common config.
+
+
+
+## License
+
+This repository is released under the [MIT License](LICENSE).
