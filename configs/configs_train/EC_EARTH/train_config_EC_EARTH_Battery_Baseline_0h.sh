@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../train_config_common.sh"
+ROOT_DIR="./Data/Grid4_New/CMIP6_EC_EARTH/graphs"
+STATION="Battery"
+MODEL="baseline"
+HISTORY_HOURS_LIST=(0)
+TRAIN_RATIO="0.4545454545"
+VAL_RATIO="0.0909090909"

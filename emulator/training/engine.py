@@ -18,7 +18,7 @@ from emulator.training.losses import slope_matching_loss_softmask, weighted_mse_
 
 
 def _is_perceiver_family(model_name: str) -> bool:
-    return str(model_name) in ("perceiver3", "perceiver3_cnn")
+    return str(model_name) == "perceiver3"
 
 
 def train_one_epoch_ddp(

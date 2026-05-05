@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/infer_config_common.sh"
 
-NAME="CMIP6_CNRM_Battery_P3_Best_TO_CMIP6_CNRM"
+NAME="CMIP6_CNRM_Battery_P3_Best_TO_CMIP6_EC_EARTH"
 ROOT_DIR="./Data/Grid4_New/CMIP6_CNRM/graphs"
-TEST_ROOT_DIR="./Data/Grid4_New/CMIP6_CNRM/graphs"
+TEST_ROOT_DIR="./Data/Grid4_New/CMIP6_EC_EARTH/graphs"
 STATION="Battery"
 
 CKPT_PATH="./Inference_Checkpoints/CMIP6_CNRM_Battery_P3_Best.pth"

@@ -14,5 +14,4 @@ RUNS=(
   "NCEP_Battery_P3_Best_TO_CMIP6_EC_EARTH|./Data/Grid4_New/CMIP6_EC_EARTH/graphs"
   "NCEP_Battery_P3_Best_TO_CMIP6_MPI|./Data/Grid4_New/CMIP6_MPI/graphs"
   "NCEP_Battery_P3_Best_TO_CMIP6_MRI|./Data/Grid4_New/CMIP6_MRI/graphs"
-  "NCEP_Battery_P3_Best_TO_CMIP6_Cane5|./Data/Grid4_New/CMIP6_Cane5/graphs"
 )

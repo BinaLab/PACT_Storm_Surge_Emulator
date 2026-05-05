@@ -59,12 +59,8 @@ from emulator.data import (
 )
 from emulator.models import (
     PACT,
-    PACTCNN,
-    SpatialMLP0h,
     SpatialOnlyGraphSAGEBatch,
     SpatioTemporalGraphSAGEBatch,
-    TemporalCNN12h,
-    TemporalLSTM12h,
 )
 from emulator.training import (
     collect_test_preds_unnorm,
@@ -259,7 +255,7 @@ def main():
     # Model selection
     # -------------------------
     parser.add_argument("--model", type=str, default="baseline",
-                        choices=["baseline", "spatial_mlp_0h", "temporal_cnn_12h", "temporal_lstm_12h", "perceiver3", "perceiver3_cnn"])
+                        choices=["baseline", "perceiver3"])
 
     # -------------------------
     # OPTIONAL: p_mean injection (ablation knob)
@@ -844,19 +840,9 @@ def main():
                 use_pmean=bool(args.use_pmean),
                 pmean_dim=int(args.pmean_dim),
             ).to(device)
-        elif model_name == "spatial_mlp_0h":
-            print0("[Model] SpatialMLP0h")
-            model = SpatialMLP0h(
-                in_channels=in_channels,
-                hidden_channels=args.hidden_channels,
-                out_channels=out_channels,
-                dropout=args.dropout,
-                use_pmean=bool(args.use_pmean),
-                pmean_dim=int(args.pmean_dim),
-            ).to(device)
         else:
             raise ValueError(
-                f"--model {model_name} requires history>0, except for baseline/spatial_mlp_0h at history=0."
+                f"--model {model_name} requires history>0. Use --model baseline for history=0."
             )
     else:
         if model_name == "baseline":
@@ -873,38 +859,10 @@ def main():
                 pmean_T=int(history_steps + 1),
                 pmean_dim=int(args.pmean_dim),
             ).to(device)
-        elif model_name == "temporal_cnn_12h":
-            if args.history_hours != 12:
-                raise ValueError("--model temporal_cnn_12h requires --history_hours 12.")
-            print0("[Model] TemporalCNN12h")
-            model = TemporalCNN12h(
-                in_channels=in_channels,
-                hidden_channels=args.hidden_channels,
-                out_channels=out_channels,
-                dropout=args.dropout,
-                use_pmean=bool(args.use_pmean),
-                pmean_T=int(history_steps + 1),
-                pmean_dim=int(args.pmean_dim),
-            ).to(device)
-        elif model_name == "temporal_lstm_12h":
-            if args.history_hours != 12:
-                raise ValueError("--model temporal_lstm_12h requires --history_hours 12.")
-            print0("[Model] TemporalLSTM12h")
-            model = TemporalLSTM12h(
-                in_channels=in_channels,
-                hidden_channels=args.hidden_channels,
-                out_channels=out_channels,
-                dropout=args.dropout,
-                use_pmean=bool(args.use_pmean),
-                pmean_T=int(history_steps + 1),
-                pmean_dim=int(args.pmean_dim),
-            ).to(device)
-
-        elif model_name in ("perceiver3", "perceiver3_cnn"):
+        elif model_name == "perceiver3":
             station_feat_dim = int(station_feat.numel()) if (station_feat is not None) else 0
-            print0("[Model] Perceiver-like Model3" if model_name == "perceiver3" else "[Model] Perceiver-like Model3 + CNN encoder")
-            model_cls = PACT if model_name == "perceiver3" else PACTCNN
-            model = model_cls(
+            print0("[Model] PACT")
+            model = PACT(
                 in_channels=in_channels,
                 hidden_channels=args.hidden_channels,
                 out_channels=out_channels,
@@ -1019,12 +977,12 @@ def main():
         else:
             loss_parts += [f"del{float(args.slope_huber_delta):g}"]
 
-    if args.model in ("perceiver3", "perceiver3_cnn"):
+    if args.model == "perceiver3":
         loss_parts += [f"gm{args.gate_mode}"]
 
     # p_mean injection: include p_mean injection mode in run tag (for clean ablations)
     if bool(args.use_pmean):
-        if args.model in ("perceiver3", "perceiver3_cnn"):
+        if args.model == "perceiver3":
             loss_parts += [f"pmean{args.perceiver_pmean_mode}"]
         else:
             loss_parts += ["pmean"]

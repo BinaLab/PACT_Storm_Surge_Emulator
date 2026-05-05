@@ -138,7 +138,7 @@ if [[ -z "${SLOPE_MASK_S_LIST+x}" ]]; then SLOPE_MASK_S_LIST=("0.10"); fi
 : "${PMEAN_DIM:=32}"
 : "${PERCEIVER_PMEAN_MODE:=tokens}"
 
-# Perceiver3 knobs (used when MODEL=perceiver3 or perceiver3_cnn)
+# Perceiver3 knobs
 : "${GATE_MODE:=window}"
 : "${GATE_BIAS_INIT:=-2.0}"
 : "${TAIL_TANH_CLIP:=2.5}"
@@ -317,15 +317,15 @@ fi
 # =========================
 EXTRA_TAG=""
 case "${MODEL}" in
-  baseline|spatial_mlp_0h|temporal_cnn_12h|temporal_lstm_12h) EXTRA_TAG="" ;;
-  perceiver3|perceiver3_cnn) EXTRA_TAG="_nrh${NODE_READ_HEADS}_trh${TIME_READ_HEADS}_L${TRANSFORMER_LAYERS}_ff${TRANSFORMER_FF_MULT}_td${TRANSFORMER_DROPOUT}_gm${GATE_MODE}" ;;
-  *) echo "[FATAL] Unknown MODEL='${MODEL}'. Use baseline|spatial_mlp_0h|temporal_cnn_12h|temporal_lstm_12h|perceiver3|perceiver3_cnn"; exit 1 ;;
+  baseline) EXTRA_TAG="" ;;
+  perceiver3) EXTRA_TAG="_nrh${NODE_READ_HEADS}_trh${TIME_READ_HEADS}_L${TRANSFORMER_LAYERS}_ff${TRANSFORMER_FF_MULT}_td${TRANSFORMER_DROPOUT}_gm${GATE_MODE}" ;;
+  *) echo "[FATAL] Unknown MODEL='${MODEL}'. Use baseline|perceiver3"; exit 1 ;;
 esac
 
 PMEAN_TAG=""
 if [[ "${USE_PMEAN}" == "1" ]]; then
   PMEAN_TAG="_pmean${PMEAN_DIM}"
-  if [[ "${MODEL}" == "perceiver3" || "${MODEL}" == "perceiver3_cnn" ]]; then
+  if [[ "${MODEL}" == "perceiver3" ]]; then
     PMEAN_TAG+="_${PERCEIVER_PMEAN_MODE}"
   fi
 fi
@@ -443,7 +443,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
               # p_mean injection (ablation)
               if [[ "${USE_PMEAN}" == "1" ]]; then
                 BASE_CMD+=(--use_pmean --pmean_dim "${PMEAN_DIM}")
-                if [[ "${MODEL}" == "perceiver3" || "${MODEL}" == "perceiver3_cnn" ]]; then
+                if [[ "${MODEL}" == "perceiver3" ]]; then
                   BASE_CMD+=(--perceiver_pmean_mode "${PERCEIVER_PMEAN_MODE}")
                 fi
               fi
@@ -463,7 +463,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
               fi
 
               # Model-specific knobs
-              if [[ "${MODEL}" == "perceiver3" || "${MODEL}" == "perceiver3_cnn" ]]; then
+              if [[ "${MODEL}" == "perceiver3" ]]; then
                 BASE_CMD+=(--node_read_heads "${NODE_READ_HEADS}"
                            --time_read_heads "${TIME_READ_HEADS}"
                            --transformer_layers "${TRANSFORMER_LAYERS}"

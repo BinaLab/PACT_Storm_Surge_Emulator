@@ -1,16 +1,15 @@
-# PACT: Peak-Aware Cross-Attention Graph Transformer for Storm Surge Forecasting
+# PACT Storm-Surge Emulator
 
-This repository contains the PACT storm-surge emulator code. The current workflow is config-driven: shell launchers source a bash config file, fill safe defaults, and call `train.py` or `infer.py` with only the arguments supported by the Python entrypoint.
+PACT is a config-driven PyTorch Geometric workflow for station-level storm-surge forecasting. It trains and evaluates graph neural emulators on NCEP and CMIP6 forcing graphs, with launchers for single-checkpoint evaluation and multi-dataset sweeps.
 
-Core tasks:
+The repository currently supports two model families:
 
-- Load pre-built PyTorch Geometric forcing graphs.
-- Train station-specific models on NCEP or CMIP6 graph roots.
-- Run single-target inference from one checkpoint.
-- Run sequential multi-target inference sweeps from one checkpoint.
-- Save metrics in physical target units and optionally save prediction arrays.
+| `MODEL` | Use case |
+| --- | --- |
+| `baseline` | GraphSAGE baseline. With `HISTORY_HOURS=0`, it is spatial only; with history, it uses a graph encoder plus an LSTM temporal head. |
+| `perceiver3` | PACT, a peak-aware cross-attention graph transformer for history-aware surge forecasting. |
 
-## Project Layout
+## Repository Layout
 
 ```text
 Emulator/
@@ -22,9 +21,6 @@ Emulator/
 |-- infer.py
 |-- infer.sh
 |-- infer_multi.sh
-|-- train_shuffle_0429.sh
-|-- train_future_only_0430.sh
-|-- train_future_only_MPI_MRI_0430.sh
 |-- emulator/
 |   |-- common/
 |   |   |-- distributed.py
@@ -52,8 +48,7 @@ Emulator/
 |   |   |-- CNRM/
 |   |   |-- EC_EARTH/
 |   |   |-- MPI/
-|   |   |-- MRI/
-|   |   `-- Cane5/
+|   |   `-- MRI/
 |   `-- configs_infer/
 |       |-- infer_config_common.sh
 |       |-- infer_config_NCEP.sh
@@ -62,9 +57,6 @@ Emulator/
 |       |-- infer_config_EC_EARTH.sh
 |       |-- infer_config_MPI.sh
 |       |-- infer_config_MRI.sh
-|       |-- infer_config_NCEP_Battery_SpatialMLP_0h.sh
-|       |-- infer_config_NCEP_Battery_TemporalCNN_12h.sh
-|       |-- infer_config_NCEP_Battery_TemporalLSTM_12h.sh
 |       |-- infer_multi_config_NCEP.sh
 |       |-- infer_multi_config_AWI.sh
 |       |-- infer_multi_config_CNRM.sh
@@ -72,7 +64,6 @@ Emulator/
 |       |-- infer_multi_config_MPI.sh
 |       `-- infer_multi_config_MRI.sh
 |-- Inference_Checkpoints/
-|-- checkpoints_Battery/
 |-- station_json/
 |-- preprocessing/
 `-- Data/
@@ -82,50 +73,66 @@ Emulator/
     |   |-- CMIP6_CNRM/
     |   |-- CMIP6_EC_EARTH/
     |   |-- CMIP6_MPI/
-    |   |-- CMIP6_MRI/
-    |   `-- CMIP6_Cane5/
+    |   `-- CMIP6_MRI/
     `-- Grid4_New_PastOnly/
 ```
 
-## Models
-
-Supported model names are:
-
-- `spatial_mlp_0h`: spatial-only 0-hour baseline.
-- `temporal_cnn_12h`: temporal CNN baseline with history.
-- `temporal_lstm_12h`: temporal LSTM baseline with history.
-- `baseline`: GraphSAGE baseline. With `HISTORY_HOURS=0`, it is spatial-only; with history, it uses the spatiotemporal baseline.
-- `perceiver3`: PACT / Perceiver-style peak-aware cross-attention model.
-- `perceiver3_cnn`: PACT variant with CNN temporal encoding.
-
-The inference config must match the checkpoint architecture. Set `MODEL` and `HISTORY_HOURS` to the values used for that checkpoint.
-
 ## Environment
 
-Run commands from the repository root:
+Create the training environment from the repository root:
 
 ```bash
 cd /home/exouser/Documents/PACT-Data/Emulator
+conda env create -f environment_training.yml
+conda activate torchpyg-cu124
 ```
 
-The launchers can activate conda automatically if `DO_CONDA=1` and `CONDA_SH` exists. The current inference common config expects:
+The launchers can activate conda for you when `DO_CONDA=1`. The shared config files currently expect:
 
 ```bash
 CONDA_ENV="torchpyg-cu124"
 CONDA_SH="/software/u22/anaconda/python3.9/etc/profile.d/conda.sh"
 ```
 
-If you already activated the right environment, set `DO_CONDA=0` in the selected config after it sources the common config.
+If the environment is already active, set `DO_CONDA=0` in the selected config, or override it at launch time when appropriate.
+
+## Data
+
+Training and evaluation expect graph roots containing `*graphs.pt` files. Standard roots in this repository are:
+
+```text
+./Data/Grid4_New/NCEP/graphs
+./Data/Grid4_New/CMIP6_AWI/graphs
+./Data/Grid4_New/CMIP6_CNRM/graphs
+./Data/Grid4_New/CMIP6_EC_EARTH/graphs
+./Data/Grid4_New/CMIP6_MPI/graphs
+./Data/Grid4_New/CMIP6_MRI/graphs
+```
+
+Each graph file is filtered by station name when `STATION` or `--station` is set. PACT also reads optional station metadata from `station_json/<station>.json`.
 
 ## Training
 
-Run training with `train.sh` and a config file:
+Training is driven by `train.sh` plus a bash config:
 
 ```bash
 bash train.sh configs/configs_train/NCEP/train_config_NCEP_Battery_P3_Best.sh
 ```
 
-`train.sh` does not use `srun`. It launches directly with Python for one GPU, or with `python -m torch.distributed.run` when `num_gpus` is greater than 1. It works on a local/interactive GPU node and also inside an allocated Slurm session where `CUDA_VISIBLE_DEVICES` is already set.
+Useful examples:
+
+```bash
+# PACT on NCEP Battery
+bash train.sh configs/configs_train/NCEP/train_config_NCEP_Battery_P3_Best.sh
+
+# 0-hour GraphSAGE baseline
+bash train.sh configs/configs_train/NCEP/train_config_NCEP_Battery_Baseline_0h.sh
+
+# 12-hour GraphSAGE plus LSTM baseline
+bash train.sh configs/configs_train/NCEP/train_config_NCEP_Battery_Baseline_12h.sh
+```
+
+`train.sh` launches directly with Python for one GPU. For multi-GPU runs, set `num_gpus` in the config; the launcher uses `python -m torch.distributed.run`.
 
 Training logs are written under:
 
@@ -134,7 +141,14 @@ launcher_logs_<STATION>/local_<timestamp>/
 launcher_logs_<STATION>/idev_<SLURM_JOB_ID>_<timestamp>/
 ```
 
-## Single Inference
+Checkpoints and metrics are written to station-specific output folders such as:
+
+```text
+checkpoints_Battery/
+results_Battery/
+```
+
+## Evaluation
 
 Use `infer.sh` for one config and one target graph root. Always pass a config path.
 
@@ -150,9 +164,6 @@ bash infer.sh configs/configs_infer/infer_config_CNRM.sh
 bash infer.sh configs/configs_infer/infer_config_EC_EARTH.sh
 bash infer.sh configs/configs_infer/infer_config_MPI.sh
 bash infer.sh configs/configs_infer/infer_config_MRI.sh
-bash infer.sh configs/configs_infer/infer_config_NCEP_Battery_SpatialMLP_0h.sh
-bash infer.sh configs/configs_infer/infer_config_NCEP_Battery_TemporalCNN_12h.sh
-bash infer.sh configs/configs_infer/infer_config_NCEP_Battery_TemporalLSTM_12h.sh
 ```
 
 `infer.sh` starts inference inside a detached tmux session. The command prints the session name, run directory, and runner path. Attach with the printed command:
@@ -172,11 +183,9 @@ logs_infer_<STATION>/<NAME>_<timestamp>/
     `-- preds_<test_tag>_<station>_<model>_ALLYEARS.npz
 ```
 
-The `.npz` file is saved because the launcher passes `--save_npz`. It contains `y_true`, `y_pred`, and `tags`. Metrics are reported in physical target units after denormalization.
+The `.npz` file contains `y_true`, `y_pred`, and `tags`. Metrics are denormalized before reporting, so RMSE and MAE are in physical target units.
 
-Note: `infer.py` labels the test tag as `NCEP` only when `TEST_ROOT_DIR` is empty. Any nonempty `TEST_ROOT_DIR` is currently labeled `CMIP6` in output filenames, even if the path points to the NCEP graph root.
-
-## Multi Inference Sweep
+## Multi-Target Evaluation
 
 Use `infer_multi.sh` to evaluate one checkpoint over several target graph roots sequentially:
 
@@ -184,7 +193,7 @@ Use `infer_multi.sh` to evaluate one checkpoint over several target graph roots 
 bash infer_multi.sh configs/configs_infer/infer_multi_config_NCEP.sh
 ```
 
-Available multi configs:
+Available sweep configs:
 
 ```bash
 bash infer_multi.sh configs/configs_infer/infer_multi_config_AWI.sh
@@ -194,12 +203,12 @@ bash infer_multi.sh configs/configs_infer/infer_multi_config_MPI.sh
 bash infer_multi.sh configs/configs_infer/infer_multi_config_MRI.sh
 ```
 
-Unlike `infer.sh`, `infer_multi.sh` runs in the current shell and does not create a tmux session. It loops over the config's `RUNS` array:
+Each multi-run config defines a `RUNS` array:
 
 ```bash
 RUNS=(
-  "RunName_TO_NCEP|./Data/Grid4_New/NCEP/graphs"
-  "RunName_TO_CMIP6_AWI|./Data/Grid4_New/CMIP6_AWI/graphs"
+  "NCEP_Battery_P3_Best_TO_NCEP|./Data/Grid4_New/NCEP/graphs"
+  "NCEP_Battery_P3_Best_TO_CMIP6_AWI|./Data/Grid4_New/CMIP6_AWI/graphs"
 )
 ```
 
@@ -213,11 +222,11 @@ Use an empty test root to fall back to the NCEP year-split test from `ROOT_DIR`:
 
 ```bash
 RUNS=(
-  "RunName_NCEP_year_split|"
+  "NCEP_Battery_P3_Best_YEAR_SPLIT|"
 )
 ```
 
-Multi-run outputs go to one directory per `RUNS` entry:
+Unlike `infer.sh`, `infer_multi.sh` runs in the current shell and does not create a tmux session. Multi-run outputs go to one directory per `RUNS` entry:
 
 ```text
 logs_infer_<STATION>/<run_name>_<timestamp>/
@@ -226,41 +235,34 @@ logs_infer_<STATION>/<run_name>_<timestamp>/
 `-- outputs/
 ```
 
-## Inference Config Fields
+## Key Config Fields
 
-The inference launchers source `configs/configs_infer/infer_config_common.sh` first, then override values in the selected config. The most important fields are:
+Training configs source `configs/configs_train/train_config_common.sh`. Evaluation configs source `configs/configs_infer/infer_config_common.sh`. The most important fields are:
 
 ```bash
-INFER_PY="infer.py"
 ROOT_DIR="./Data/Grid4_New/NCEP/graphs"
-TEST_ROOT_DIR="./Data/Grid4_New/NCEP/graphs"
+TEST_ROOT_DIR="./Data/Grid4_New/CMIP6_AWI/graphs"
 STATION="Battery"
-CKPT_PATH="./Inference_Checkpoints/NCEP_Battery_P3_Best.pth"
 MODEL="perceiver3"
 HISTORY_HOURS=12
+CKPT_PATH="./Inference_Checkpoints/NCEP_Battery_P3_Best.pth"
 BATCH_SIZE=1
+YEARS=""
 STATION_JSON_DIR="./station_json"
-YEARS="2094_2095, 2095_2096"
 ```
 
-Field meanings:
+Field notes:
 
-- `ROOT_DIR`: training/NCEP root used for checkpoint-compatible stats and for NCEP year-split inference when `TEST_ROOT_DIR` is empty.
-- `TEST_ROOT_DIR`: if nonempty, infer on all matching years from this graph root. This can be NCEP or any CMIP6 graph root.
+- `ROOT_DIR`: graph root used for training, validation, and checkpoint-compatible statistics.
+- `TEST_ROOT_DIR`: optional external evaluation root. If empty, inference uses the NCEP year-split test set from `ROOT_DIR`.
+- `MODEL`: either `baseline` or `perceiver3`.
+- `HISTORY_HOURS`: history window expected by the model or checkpoint. It must be a multiple of 6.
 - `CKPT_PATH`: checkpoint path. Glob patterns are allowed; the newest matching file is used.
-- `MODEL`: one of the supported model names listed above.
-- `HISTORY_HOURS`: history window expected by the checkpoint; must be a multiple of 6.
-- `YEARS`: optional comma-separated year tags. Set `YEARS=""` to evaluate every available year in the selected test set.
+- `YEARS`: optional comma-separated year tags. Leave empty to evaluate every available year.
 - `USE_AMP`, `AMP_DTYPE`, `USE_TF32`, `TORCH_THREADS`: speed/runtime knobs.
 - `NUM_WORKERS`, `PIN_MEMORY`, `PERSISTENT_WORKERS`, `PREFETCH_FACTOR`, `MP_CONTEXT`: DataLoader knobs.
 
-Important: the current `infer_config_common.sh` sets `YEARS` to a small future-year subset. If you want all available years, edit the selected config or common config and set:
-
-```bash
-YEARS=""
-```
-
-## Direct Python Inference
+## Direct Python Evaluation
 
 The shell launchers are preferred, but `infer.py` can also be called directly:
 
@@ -285,23 +287,7 @@ python -u infer.py \
   --mp_context fork
 ```
 
-## Data Notes
-
-Graph roots are expected to contain `*graphs.pt` files. Typical roots are:
-
-```text
-./Data/Grid4_New/NCEP/graphs
-./Data/Grid4_New/CMIP6_AWI/graphs
-./Data/Grid4_New/CMIP6_CNRM/graphs
-./Data/Grid4_New/CMIP6_EC_EARTH/graphs
-./Data/Grid4_New/CMIP6_MPI/graphs
-./Data/Grid4_New/CMIP6_MRI/graphs
-./Data/Grid4_New/CMIP6_Cane5/graphs
-```
-
-For PACT/Perceiver models, station metadata is loaded from `station_json/<station>.json` when available.
-
-## Quick Troubleshooting
+## Troubleshooting
 
 - `CKPT_PATH does not resolve to a file`: update `CKPT_PATH` or confirm the glob matches at least one `.pth` file.
 - `No test samples found`: check `ROOT_DIR`, `TEST_ROOT_DIR`, `STATION`, and `YEARS`.
