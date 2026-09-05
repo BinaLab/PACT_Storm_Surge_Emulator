@@ -27,7 +27,7 @@ def _log(log_fn: Callable[..., None], message: str) -> None:
 
 
 class ForcingGraphStore:
-    """Load all `*_graphs.pt` files once and index them by year/station.
+    """Load matching `*_graphs.pt` files once and index them by year/station.
 
     Filename convention:
       <year0>_<year1>_<station>_<version...>_graphs.pt
@@ -37,6 +37,7 @@ class ForcingGraphStore:
       - graph_tags: list of string tags aligned with `graphs`
       - year_to_indices: dict mapping `<year0>_<year1>` -> sample indices
       - station_to_indices: dict mapping station key -> sample indices
+      - station_filter: effective filename-level station filter, or `None`
     """
 
     def __init__(
@@ -45,6 +46,8 @@ class ForcingGraphStore:
         pattern: str = "*graphs.pt",
         log_fn: Callable[..., None] = print,
         force_cpu: bool = True,
+        station_filter: str | None = None,
+        strict_station_filter: bool = True,
     ):
         self.root_dir = root_dir
         self.pattern = pattern
@@ -58,6 +61,10 @@ class ForcingGraphStore:
         files = sorted(glob.glob(os.path.join(root_dir, pattern)))
         _log(log_fn, f"Found {len(files)} graph files in {root_dir}")
 
+        # Parse every filename before loading any payload. This makes station
+        # filtering cheap and prevents unrelated stations from ever reaching
+        # torch.load (and therefore from occupying CPU RAM).
+        file_records: list[tuple[str, str, str, str]] = []
         for fpath in files:
             base = os.path.basename(fpath)
             if base.endswith("_graphs.pt"):
@@ -73,6 +80,35 @@ class ForcingGraphStore:
             station_tag = parts[2]
             version_tag = "_".join(parts[3:]) if len(parts) > 3 else ""
 
+            file_records.append((fpath, year_tag, station_tag, version_tag))
+
+        requested_station = None if station_filter is None else str(station_filter).strip()
+        if requested_station == "":
+            requested_station = None
+
+        available_stations = sorted({record[2] for record in file_records})
+        if requested_station is not None:
+            if requested_station not in available_stations:
+                message = (
+                    f"Station filter '{requested_station}' not found in filenames under {root_dir}. "
+                    f"Available={available_stations}"
+                )
+                if strict_station_filter:
+                    raise RuntimeError(message)
+                _log(log_fn, f"[WARN] {message} -> Loading ALL station files.")
+                requested_station = None
+            else:
+                selected_records = [record for record in file_records if record[2] == requested_station]
+                _log(
+                    log_fn,
+                    f"[Store filter] station='{requested_station}' files="
+                    f"{len(selected_records)}/{len(file_records)} selected before torch.load.",
+                )
+                file_records = selected_records
+
+        self.station_filter = requested_station
+
+        for fpath, year_tag, station_tag, version_tag in file_records:
             # Loading to CPU avoids hidden CUDA allocations from serialized tensors.
             if force_cpu:
                 data_list = torch.load(fpath, map_location="cpu", weights_only=False)
@@ -95,7 +131,7 @@ class ForcingGraphStore:
                 self.year_to_indices[year_tag].append(idx)
                 self.station_to_indices[station_tag].append(idx)
 
-        _log(log_fn, f"Loaded {len(self.graphs)} graphs from {len(files)} files.")
+        _log(log_fn, f"Loaded {len(self.graphs)} graphs from {len(file_records)} files.")
         _log(log_fn, f"Years found: {sorted(self.year_to_indices.keys())}")
         _log(log_fn, f"Stations found: {sorted(self.station_to_indices.keys())}")
 

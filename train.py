@@ -456,7 +456,12 @@ def main():
     # -------------------------
     # Load train/val store
     # -------------------------
-    store = ForcingGraphStore(args.root_dir, pattern="*graphs.pt", log_fn=print0)
+    store = ForcingGraphStore(
+        args.root_dir,
+        pattern="*graphs.pt",
+        log_fn=print0,
+        station_filter=station_key,
+    )
 
     train_idx = make_year_split_indices(
         store,
@@ -498,7 +503,12 @@ def main():
     # External test store (e.g., CMIP6)
     store_test = None
     if args.test_root_dir is not None and args.test_root_dir.strip() != "":
-        store_test = ForcingGraphStore(args.test_root_dir, pattern="*graphs.pt", log_fn=print0)
+        store_test = ForcingGraphStore(
+            args.test_root_dir,
+            pattern="*graphs.pt",
+            log_fn=print0,
+            station_filter=station_key,
+        )
         test_idx_ext = make_all_years_test_indices(store_test, station_filter=station_key, log_fn=print0)
         test_tag = infer_dataset_tag(args.test_root_dir) or "external"
         print0(f"[Test mode] External test enabled. Using ALL years from: {args.test_root_dir}")

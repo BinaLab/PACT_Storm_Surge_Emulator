@@ -193,17 +193,38 @@ def main():
             station_feat = station_features_from_json(st_json).to(device=device, dtype=torch.float32)
             print(f"[Station JSON] loaded '{station_key}' -> feat_dim={station_feat.numel()}", flush=True)
 
-    # build store(s) and choose test indices
-    store_ncep = ForcingGraphStore(args.root_dir, pattern="*graphs.pt")
-
+    # Build only the store used by this inference mode. Filtering filenames
+    # before torch.load avoids materializing unrelated stations in CPU RAM.
     external = bool(args.test_root_dir.strip() != "")
     if external:
-        store_test = ForcingGraphStore(args.test_root_dir, pattern="*graphs.pt")
-        test_indices_all = make_all_years_test_indices(store_test, station_filter=station_key, strict=args.strict_station_test)
+        store_test = ForcingGraphStore(
+            args.test_root_dir,
+            pattern="*graphs.pt",
+            station_filter=station_key,
+            strict_station_filter=args.strict_station_test,
+        )
+        test_indices_all = make_all_years_test_indices(
+            store_test,
+            station_filter=station_key,
+            strict=args.strict_station_test,
+        )
         store_for_test = store_test
         test_tag = "CMIP6"
     else:
-        test_indices_all = make_year_split_indices(store_ncep, part="test", station_filter=station_key, train_frac=0.6, val_frac=0.2)
+        store_ncep = ForcingGraphStore(
+            args.root_dir,
+            pattern="*graphs.pt",
+            station_filter=station_key,
+            # Preserve the existing non-strict year-split fallback behavior.
+            strict_station_filter=False,
+        )
+        test_indices_all = make_year_split_indices(
+            store_ncep,
+            part="test",
+            station_filter=station_key,
+            train_frac=0.6,
+            val_frac=0.2,
+        )
         store_for_test = store_ncep
         test_tag = "NCEP"
 
