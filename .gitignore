@@ -37,8 +37,8 @@ events.out.tfevents.*
 *.joblib
 
 # Data / outputs
-data/
-Data/
+/data/
+/Data/
 outputs/
 results/
 predictions/
