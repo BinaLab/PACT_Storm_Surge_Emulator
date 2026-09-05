@@ -32,6 +32,7 @@ set -u
 : "${ROOT_DIR:=./Data/NCEP/graphs}"
 : "${STATION:=Battery}"
 : "${MODEL:=baseline}"
+: "${ENCODER_TYPE:=GraphSAGE}"
 : "${HISTORY_HOURS:=12}"
 : "${BATCH_SIZE:=1}"
 : "${STATION_JSON_DIR:=./station_json}"
@@ -57,6 +58,11 @@ set -u
 
 : "${CKPT_PATH:=}"
 : "${LOG_ROOT_PREFIX:=logs_infer_}"
+
+case "${ENCODER_TYPE}" in
+  GraphSAGE|CNN) ;;
+  *) echo "[FATAL] ENCODER_TYPE must be GraphSAGE or CNN; got '${ENCODER_TYPE}'"; exit 1 ;;
+esac
 
 # Resolve checkpoint (supports glob patterns)
 resolve_ckpt () {
@@ -148,6 +154,7 @@ echo "Checkpoint:        ${CKPT_RESOLVED}"
 echo "ROOT_DIR:          ${ROOT_DIR}"
 echo "Station:           ${STATION}"
 echo "Model:             ${MODEL}"
+echo "Encoder:           ${ENCODER_TYPE}"
 echo "History hours:     ${HISTORY_HOURS}"
 echo "Batch size:        ${BATCH_SIZE}"
 echo "Years:             ${YEARS:-<all>}"
@@ -202,6 +209,7 @@ for spec in "${RUNS[@]}"; do
     "${STATION_ARGS[@]}" \
     --station_json_dir "${STATION_JSON_DIR}" \
     --model "${MODEL}" \
+    --encoder_type "${ENCODER_TYPE}" \
     --history_hours "${HISTORY_HOURS}" \
     --batch_size "${BATCH_SIZE}" \
     --ckpt "${CKPT_RESOLVED}" \

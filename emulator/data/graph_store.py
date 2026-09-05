@@ -286,6 +286,7 @@ class ForcingGraphView(Dataset):
       - `edge_index`: graph connectivity
       - `y`: forecast target `(1, H)`
       - `x_hist`: optional history tensor `(N, W, F)`
+      - `grid_H` / `grid_W`: optional grid dimensions used by the CNN encoder
       - `p_mean_hist` / `p_mean_curr`: optional global pressure metadata
       - `tag`: string identifier for reproducibility and grouped metrics
     """
@@ -306,6 +307,13 @@ class ForcingGraphView(Dataset):
         data.x = g.x
         data.edge_index = g.edge_index
         data.y = g.y.view(1, -1)
+
+        # Keep spatial metadata available after PyG batching. GraphSAGE does not
+        # need it; the CNN encoder uses it to recover (B, C, H, W) dynamically.
+        if hasattr(g, "grid_H"):
+            data.grid_H = int(g.grid_H)
+        if hasattr(g, "grid_W"):
+            data.grid_W = int(g.grid_W)
 
         if hasattr(g, "x_hist"):
             window = self.history_steps + 1

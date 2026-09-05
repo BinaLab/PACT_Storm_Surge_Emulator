@@ -3,6 +3,7 @@
 TRAIN_PY="train.py"
 num_gpus=4
 TEST_ROOT_DIR=""
+ENCODER_TYPE="GraphSAGE"
 
 BATCH_SIZE=256
 LR_LIST=("5e-3")

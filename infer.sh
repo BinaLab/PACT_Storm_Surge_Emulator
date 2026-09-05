@@ -35,6 +35,7 @@ set -u
 : "${STATION:=Battery}"
 : "${NAME:=stormsurge_infer}"
 : "${MODEL:=baseline}"
+: "${ENCODER_TYPE:=GraphSAGE}"
 : "${HISTORY_HOURS:=12}"
 : "${BATCH_SIZE:=1}"
 : "${STATION_JSON_DIR:=./station_json}"
@@ -63,6 +64,11 @@ set -u
 
 # Required
 : "${CKPT_PATH:=}"
+
+case "${ENCODER_TYPE}" in
+  GraphSAGE|CNN) ;;
+  *) echo "[FATAL] ENCODER_TYPE must be GraphSAGE or CNN; got '${ENCODER_TYPE}'"; exit 1 ;;
+esac
 
 init_conda () {
   if [[ "${DO_CONDA}" -ne 1 ]]; then
@@ -147,6 +153,7 @@ echo "Checkpoint:    ${CKPT_RESOLVED}"
 echo "ROOT_DIR:      ${ROOT_DIR}"
 echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<empty => NCEP year-split test>}"
 echo "Model:         ${MODEL}"
+echo "Encoder:       ${ENCODER_TYPE}"
 echo "History hours: ${HISTORY_HOURS}"
 echo "Batch size:    ${BATCH_SIZE}"
 echo "Years:         ${YEARS:-<all>}"
@@ -170,10 +177,16 @@ set -u
 : "\${TEST_ROOT_DIR:=}"
 : "\${STATION:=Battery}"
 : "\${MODEL:=baseline}"
+: "\${ENCODER_TYPE:=GraphSAGE}"
 : "\${HISTORY_HOURS:=12}"
 : "\${BATCH_SIZE:=1}"
 : "\${STATION_JSON_DIR:=./station_json}"
 : "\${YEARS:=}"
+
+case "\${ENCODER_TYPE}" in
+  GraphSAGE|CNN) ;;
+  *) echo "[FATAL] ENCODER_TYPE must be GraphSAGE or CNN; got '\${ENCODER_TYPE}'"; exit 1 ;;
+esac
 
 : "\${CUDA_LAUNCH_BLOCKING_FLAG:=0}"
 : "\${TORCH_GPU_PROBE:=0}"
@@ -320,6 +333,7 @@ THREAD_ARGS=(--torch_threads "\${TORCH_THREADS}")
   "\${STATION_ARGS[@]}" \\
   --station_json_dir "\${STATION_JSON_DIR}" \\
   --model "\${MODEL}" \\
+  --encoder_type "\${ENCODER_TYPE}" \\
   --history_hours "\${HISTORY_HOURS}" \\
   --batch_size "\${BATCH_SIZE}" \\
   --ckpt "\${CKPT_RESOLVED}" \\

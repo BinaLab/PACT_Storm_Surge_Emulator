@@ -47,6 +47,7 @@ set -u
 : "${TEST_ROOT_DIR:=}"
 : "${STATION:=}"
 : "${MODEL:=baseline}"
+: "${ENCODER_TYPE:=GraphSAGE}"
 : "${STATION_JSON_DIR:=./station_json}"
 
 : "${BATCH_SIZE:=256}"
@@ -72,6 +73,11 @@ case "${FUTURE_ONLY,,}" in
   1|true|yes|y|on) FUTURE_ONLY=1 ;;
   0|false|no|n|off) FUTURE_ONLY=0 ;;
   *) echo "[FATAL] FUTURE_ONLY must be 0/1 or true/false; got '${FUTURE_ONLY}'"; exit 1 ;;
+esac
+
+case "${ENCODER_TYPE}" in
+  GraphSAGE|CNN) ;;
+  *) echo "[FATAL] ENCODER_TYPE must be GraphSAGE or CNN; got '${ENCODER_TYPE}'"; exit 1 ;;
 esac
 
 # Arrays (declare if missing)
@@ -266,6 +272,7 @@ echo "Workdir:       ${WORKDIR}"
 echo "Sweep dir:     ${SWEEP_DIR}"
 echo "Train script:  ${TRAIN_PY}"
 echo "Model:         ${MODEL}"
+echo "Encoder:       ${ENCODER_TYPE}"
 echo "ROOT_DIR:      ${ROOT_DIR}"
 echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<none>}"
 echo "TRAIN_DATA_TAG:${TRAIN_DATA_TAG}"
@@ -338,6 +345,12 @@ if [[ "${FUTURE_ONLY}" == "1" ]]; then
   SPLIT_TAG+="_futuregt${FUTURE_YEAR_THRESHOLD}"
 fi
 
+# Keep historical GraphSAGE run names stable; label only the new CNN variant.
+ENCODER_TAG=""
+if [[ "${ENCODER_TYPE}" == "CNN" ]]; then
+  ENCODER_TAG="_encCNN"
+fi
+
 # =========================
 # Sweep loops
 # =========================
@@ -398,7 +411,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
                 SCHED_ARGS+=(--rop_metric "${ROP_METRIC}")
               fi
 
-              RUN_TAG="${STATION:-ALL}_${TRAIN_DATA_TAG}to${TEST_DATA_TAG}_${MODEL}${EXTRA_TAG}${PMEAN_TAG}${SPLIT_TAG}${LOSS_TAG2}_hist${H}h_hid${HIDDEN_CHANNELS}_L${NUM_LAYERS}_bs${BATCH_SIZE}_lr${LR_CUR}_ep${EPOCHS}_sch${SCHEDULER}_xn${X_NORM}"
+              RUN_TAG="${STATION:-ALL}_${TRAIN_DATA_TAG}to${TEST_DATA_TAG}_${MODEL}${ENCODER_TAG}${EXTRA_TAG}${PMEAN_TAG}${SPLIT_TAG}${LOSS_TAG2}_hist${H}h_hid${HIDDEN_CHANNELS}_L${NUM_LAYERS}_bs${BATCH_SIZE}_lr${LR_CUR}_ep${EPOCHS}_sch${SCHEDULER}_xn${X_NORM}"
               LOG_FILE="${SWEEP_DIR}/train_${RUN_TAG}.log"
               : > "${LOG_FILE}"
 
@@ -406,6 +419,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
                 "${TRAIN_PY}"
                 --root_dir "${ROOT_DIR}"
                 --model "${MODEL}"
+                --encoder_type "${ENCODER_TYPE}"
                 --batch_size "${BATCH_SIZE}"
                 --lr "${LR_CUR}"
                 --epochs "${EPOCHS}"

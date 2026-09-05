@@ -1,6 +1,7 @@
 """Model architectures used by the storm-surge emulator project."""
 
 from .architectures import (
+    GridCNNEncoder,
     MLP,
     PACT,
     SpatialOnlyGraphSAGEBatch,
@@ -10,6 +11,7 @@ from .architectures import (
 
 __all__ = [
     "MLP",
+    "GridCNNEncoder",
     "SpatialOnlyGraphSAGEBatch",
     "SpatioTemporalGraphSAGEBatch",
     "TransformerBlock",

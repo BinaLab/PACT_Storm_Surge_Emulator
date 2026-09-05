@@ -256,6 +256,16 @@ def main():
     # -------------------------
     parser.add_argument("--model", type=str, default="baseline",
                         choices=["baseline", "perceiver3"])
+    parser.add_argument(
+        "--encoder_type",
+        type=str,
+        default="GraphSAGE",
+        choices=["GraphSAGE", "CNN"],
+        help=(
+            "Spatial encoder. GraphSAGE uses edge_index; CNN reshapes each graph "
+            "from (H*W,F) to (F,H,W) using grid_H/grid_W stored in the input data."
+        ),
+    )
 
     # -------------------------
     # OPTIONAL: p_mean injection (ablation knob)
@@ -839,7 +849,7 @@ def main():
 
     if history_steps == 0:
         if model_name == "baseline":
-            print0("[Model] SpatialOnlyGraphSAGEBatch (history=0)")
+            print0(f"[Model] SpatialOnlyGraphSAGEBatch (history=0, encoder={args.encoder_type})")
             model = SpatialOnlyGraphSAGEBatch(
                 in_channels=in_channels,
                 hidden_channels=args.hidden_channels,
@@ -849,6 +859,7 @@ def main():
                 # p_mean injection: optional p_mean usage (ablation)
                 use_pmean=bool(args.use_pmean),
                 pmean_dim=int(args.pmean_dim),
+                encoder_type=args.encoder_type,
             ).to(device)
         else:
             raise ValueError(
@@ -856,7 +867,7 @@ def main():
             )
     else:
         if model_name == "baseline":
-            print0("[Model] SpatioTemporalGraphSAGEBatch + LSTM (baseline)")
+            print0(f"[Model] SpatioTemporalGraphSAGEBatch + LSTM (encoder={args.encoder_type})")
             model = SpatioTemporalGraphSAGEBatch(
                 in_channels=in_channels,
                 hidden_channels=args.hidden_channels,
@@ -868,10 +879,11 @@ def main():
                 use_pmean=bool(args.use_pmean),
                 pmean_T=int(history_steps + 1),
                 pmean_dim=int(args.pmean_dim),
+                encoder_type=args.encoder_type,
             ).to(device)
         elif model_name == "perceiver3":
             station_feat_dim = int(station_feat.numel()) if (station_feat is not None) else 0
-            print0("[Model] PACT")
+            print0(f"[Model] PACT (encoder={args.encoder_type})")
             model = PACT(
                 in_channels=in_channels,
                 hidden_channels=args.hidden_channels,
@@ -899,6 +911,7 @@ def main():
                 use_pmean_tokens=bool(args.use_pmean) and (args.perceiver_pmean_mode in ("tokens", "both")),
                 use_pmean_global=bool(args.use_pmean) and (args.perceiver_pmean_mode in ("global", "both")),
                 pmean_dim=int(args.pmean_dim),
+                encoder_type=args.encoder_type,
             ).to(device)
 
         else:
@@ -1044,6 +1057,7 @@ def main():
                 "test_tag": test_tag,
                 "station_tag": station_tag,
                 "model": model_name,
+                "encoder_type": args.encoder_type,
                 "loss_tag": loss_tag,
                 "root_dir": args.root_dir,
                 "test_root_dir": args.test_root_dir,

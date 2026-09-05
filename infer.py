@@ -67,6 +67,16 @@ def main():
 
     # overrides
     parser.add_argument("--model", type=str, default="", choices=["", "baseline", "perceiver3"])
+    parser.add_argument(
+        "--encoder_type",
+        type=str,
+        default="",
+        choices=["", "GraphSAGE", "CNN"],
+        help=(
+            "Expected checkpoint encoder. Empty reads checkpoint args; legacy checkpoints "
+            "default to GraphSAGE."
+        ),
+    )
     parser.add_argument("--history_hours", type=int, default=-1, help="Override history_hours; -1 uses ckpt args")
     parser.add_argument("--tf32", action="store_true")
     parser.add_argument("--torch_threads", type=int, default=1)
@@ -129,6 +139,15 @@ def main():
 
     # resolve model + history from ckpt unless overridden
     model_name = args.model if args.model else str(ckpt_args.get("model", "baseline"))
+    checkpoint_encoder_type = str(ckpt_args.get("encoder_type") or "GraphSAGE")
+    encoder_type = args.encoder_type if args.encoder_type else checkpoint_encoder_type
+    if args.encoder_type and args.encoder_type != checkpoint_encoder_type:
+        raise ValueError(
+            "Encoder override does not match the checkpoint: "
+            f"checkpoint={checkpoint_encoder_type!r}, requested={args.encoder_type!r}. "
+            "GraphSAGE and CNN have different parameter layouts; use a checkpoint trained "
+            "with the requested encoder."
+        )
     history_hours = args.history_hours if args.history_hours >= 0 else int(ckpt_args.get("history_hours", 0))
     if history_hours % 6 != 0:
         raise ValueError(f"history_hours must be multiple of 6, got {history_hours}")
@@ -145,6 +164,7 @@ def main():
     print(f"[infer] device={device}", flush=True)
     print(f"[infer] ckpt={args.ckpt}", flush=True)
     print(f"[infer] model={model_name}", flush=True)
+    print(f"[infer] encoder_type={encoder_type}", flush=True)
     print(f"[infer] history_hours={history_hours} (steps={history_steps})", flush=True)
     print(f"[infer] station={station_key or 'ALL'}", flush=True)
     print(f"[infer] root_dir={args.root_dir}", flush=True)
@@ -268,6 +288,7 @@ def main():
                 dropout=dropout,
                 use_pmean=use_pmean,
                 pmean_dim=pmean_dim,
+                encoder_type=encoder_type,
             )
         else:
             W = history_steps + 1
@@ -280,6 +301,7 @@ def main():
                 use_pmean=use_pmean,
                 pmean_T=W,
                 pmean_dim=pmean_dim,
+                encoder_type=encoder_type,
             )
     elif model_name == "perceiver3":
         if history_steps == 0:
@@ -311,6 +333,7 @@ def main():
             use_pmean_tokens=use_tokens,
             use_pmean_global=use_global,
             pmean_dim=pmean_dim,
+            encoder_type=encoder_type,
         )
     else:
         raise ValueError(
@@ -517,6 +540,7 @@ def main():
         test_tag=test_tag,
         station=station_tag,
         model=model_name,
+        encoder_type=encoder_type,
         history_hours=int(history_hours),
         ckpt=args.ckpt,
         root_dir=args.root_dir,
@@ -530,7 +554,11 @@ def main():
         x_clip=float(x_clip),
         # <<< END INJECTED
     )
-    json_path = os.path.join(args.out_dir, f"metrics_per_year_{test_tag}_{station_tag}_{model_name}.json")
+    encoder_file_tag = "" if encoder_type == "GraphSAGE" else f"_{encoder_type}"
+    json_path = os.path.join(
+        args.out_dir,
+        f"metrics_per_year_{test_tag}_{station_tag}_{model_name}{encoder_file_tag}.json",
+    )
     with open(json_path, "w") as f:
         json.dump(meta, f, indent=2)
     print(f"Saved per-year metrics -> {json_path}", flush=True)
@@ -540,7 +568,10 @@ def main():
         YT = np.concatenate(y_true_all, axis=0)
         YP = np.concatenate(y_pred_all, axis=0)
         TAGS = np.concatenate(tags_all, axis=0)
-        npz_path = os.path.join(args.out_dir, f"preds_{test_tag}_{station_tag}_{model_name}_ALLYEARS.npz")
+        npz_path = os.path.join(
+            args.out_dir,
+            f"preds_{test_tag}_{station_tag}_{model_name}{encoder_file_tag}_ALLYEARS.npz",
+        )
         np.savez(npz_path, y_true=YT, y_pred=YP, tags=TAGS)
         print(f"Saved predictions -> {npz_path}", flush=True)
 

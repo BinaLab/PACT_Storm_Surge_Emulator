@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 INFER_PY="infer.py"
+ENCODER_TYPE="GraphSAGE"
 BATCH_SIZE=1
 STATION_JSON_DIR="./station_json"
 YEARS=""

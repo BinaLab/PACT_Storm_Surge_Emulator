@@ -41,11 +41,147 @@ def _masked_mean(h: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return h.sum(dim=1) / denom
 
 
+def _canonical_encoder_type(encoder_type: str) -> str:
+    """Normalize the public encoder name while keeping a strict option set."""
+    value = str(encoder_type).strip().lower()
+    if value == "graphsage":
+        return "GraphSAGE"
+    if value == "cnn":
+        return "CNN"
+    raise ValueError(f"Unknown encoder_type: {encoder_type!r}. Expected 'GraphSAGE' or 'CNN'.")
+
+
+def _make_graphsage_layers(in_channels: int, hidden_channels: int, num_layers: int) -> nn.ModuleList:
+    """Build the historical GraphSAGE stack without changing state-dict keys."""
+    convs = nn.ModuleList()
+    convs.append(SAGEConv(in_channels, hidden_channels))
+    for _ in range(num_layers - 2):
+        convs.append(SAGEConv(hidden_channels, hidden_channels))
+    convs.append(SAGEConv(hidden_channels, hidden_channels))
+    return convs
+
+
+def _uniform_grid_dim(batch, name: str, batch_size: int) -> int:
+    """Read one positive grid dimension and require it to match across a batch."""
+    if not hasattr(batch, name):
+        raise ValueError(
+            f"CNN encoder requires batch.{name}. Ensure ForcingGraphView receives graphs "
+            "with grid_H/grid_W metadata."
+        )
+
+    raw_value = getattr(batch, name)
+    if torch.is_tensor(raw_value):
+        values = raw_value.reshape(-1)
+        if values.numel() == 0:
+            raise ValueError(f"CNN encoder received empty batch.{name} metadata.")
+        if values.numel() not in (1, batch_size):
+            raise ValueError(
+                f"Expected batch.{name} to contain 1 or B={batch_size} values, "
+                f"got {values.numel()}."
+            )
+        first = int(values[0].item())
+        if bool((values != first).any().item()):
+            found = values.detach().cpu().tolist()
+            raise ValueError(f"CNN encoder requires uniform {name} within a batch, got {found}.")
+    else:
+        values = list(raw_value) if isinstance(raw_value, (list, tuple)) else [raw_value]
+        if len(values) not in (1, batch_size):
+            raise ValueError(
+                f"Expected batch.{name} to contain 1 or B={batch_size} values, got {len(values)}."
+            )
+        parsed = [int(value) for value in values]
+        first = parsed[0]
+        if any(value != first for value in parsed[1:]):
+            raise ValueError(f"CNN encoder requires uniform {name} within a batch, got {parsed}.")
+
+    if first <= 0:
+        raise ValueError(f"CNN encoder requires positive {name}, got {first}.")
+    return first
+
+
+def _infer_grid_batch_shape(batch, total_nodes: int) -> tuple[int, int, int]:
+    """Infer `(B, H, W)` from PyG batch metadata and validate node layout."""
+    batch_size = int(batch.num_graphs)
+    if batch_size <= 0:
+        raise ValueError(f"CNN encoder requires a non-empty batch, got B={batch_size}.")
+
+    grid_h = _uniform_grid_dim(batch, "grid_H", batch_size)
+    grid_w = _uniform_grid_dim(batch, "grid_W", batch_size)
+    nodes_per_graph = grid_h * grid_w
+    expected_nodes = batch_size * nodes_per_graph
+    if int(total_nodes) != expected_nodes:
+        raise ValueError(
+            "CNN encoder grid/node mismatch: "
+            f"B={batch_size}, H={grid_h}, W={grid_w} imply {expected_nodes} flattened nodes, "
+            f"but input has {int(total_nodes)}."
+        )
+
+    if not hasattr(batch, "batch"):
+        raise ValueError("CNN encoder requires the PyG batch assignment vector `batch.batch`.")
+    batch_vec = batch.batch
+    if int(batch_vec.numel()) != int(total_nodes):
+        raise ValueError(
+            f"CNN encoder batch vector has {batch_vec.numel()} entries for {int(total_nodes)} nodes."
+        )
+
+    counts = torch.bincount(batch_vec, minlength=batch_size)
+    counts_ok = counts.numel() == batch_size and bool((counts == nodes_per_graph).all().item())
+    if not counts_ok:
+        found = counts.detach().cpu().tolist()
+        raise ValueError(
+            f"CNN encoder requires exactly H*W={nodes_per_graph} nodes per graph, got {found}."
+        )
+
+    return batch_size, grid_h, grid_w
+
+
+class GridCNNEncoder(nn.Module):
+    """Same-resolution 2D CNN that returns one hidden token per grid node."""
+
+    def __init__(self, in_channels: int, hidden_channels: int, num_layers: int, dropout: float):
+        super().__init__()
+        depth = int(num_layers)
+        if depth <= 0:
+            raise ValueError(f"CNN encoder requires num_layers >= 1, got {depth}.")
+
+        layers = []
+        current_channels = int(in_channels)
+        for _ in range(depth):
+            layers.append(
+                nn.Conv2d(
+                    in_channels=current_channels,
+                    out_channels=int(hidden_channels),
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                )
+            )
+            current_channels = int(hidden_channels)
+
+        self.layers = nn.ModuleList(layers)
+        self.act = nn.LeakyReLU(0.1, inplace=True)
+        self.dropout = float(dropout)
+
+    def forward(self, x: torch.Tensor, grid_shape: tuple[int, int, int]) -> torch.Tensor:
+        if x.dim() != 2:
+            raise ValueError(f"CNN encoder expects flattened node features (B*N,F), got {tuple(x.shape)}.")
+
+        batch_size, grid_h, grid_w = grid_shape
+        h = x.reshape(batch_size, grid_h, grid_w, x.size(-1)).permute(0, 3, 1, 2).contiguous()
+        for layer in self.layers:
+            h = layer(h)
+            h = self.act(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+
+        # Return the same node-token interface as GraphSAGE: (B*N, hidden_channels).
+        return h.permute(0, 2, 3, 1).contiguous().reshape(batch_size * grid_h * grid_w, -1)
+
+
 class SpatialOnlyGraphSAGEBatch(nn.Module):
-    """Baseline encoder for `history_steps == 0`.
+    """Spatial baseline for `history_steps == 0` (legacy class name).
 
     Pipeline:
-      GraphSAGE -> global mean pool -> linear forecast head.
+      selected spatial encoder -> global mean pool -> linear forecast head.
 
     Optional p_mean pathway:
       If enabled and `batch.p_mean_curr` is provided, a small encoder embeds the
@@ -61,13 +197,16 @@ class SpatialOnlyGraphSAGEBatch(nn.Module):
         dropout=0.0,
         use_pmean: bool = False,
         pmean_dim: int = 32,
+        encoder_type: str = "GraphSAGE",
     ):
         super().__init__()
-        self.convs = nn.ModuleList()
-        self.convs.append(SAGEConv(in_channels, hidden_channels))
-        for _ in range(num_layers - 2):
-            self.convs.append(SAGEConv(hidden_channels, hidden_channels))
-        self.convs.append(SAGEConv(hidden_channels, hidden_channels))
+        self.encoder_type = _canonical_encoder_type(encoder_type)
+        if self.encoder_type == "GraphSAGE":
+            self.convs = _make_graphsage_layers(in_channels, hidden_channels, num_layers)
+            self.cnn_encoder = None
+        else:
+            self.convs = nn.ModuleList()
+            self.cnn_encoder = GridCNNEncoder(in_channels, hidden_channels, num_layers, dropout)
 
         self.act = nn.LeakyReLU(0.1, inplace=True)
         self.dropout = float(dropout)
@@ -89,11 +228,15 @@ class SpatialOnlyGraphSAGEBatch(nn.Module):
         edge_index = batch.edge_index
         batch_index = batch.batch
 
-        h = x
-        for conv in self.convs:
-            h = conv(h, edge_index)
-            h = self.act(h)
-            h = F.dropout(h, p=self.dropout, training=self.training)
+        if self.cnn_encoder is not None:
+            grid_shape = _infer_grid_batch_shape(batch, x.size(0))
+            h = self.cnn_encoder(x, grid_shape)
+        else:
+            h = x
+            for conv in self.convs:
+                h = conv(h, edge_index)
+                h = self.act(h)
+                h = F.dropout(h, p=self.dropout, training=self.training)
 
         h_pool = global_mean_pool(h, batch_index)
         h_pool = F.dropout(h_pool, p=self.dropout, training=self.training)
@@ -110,10 +253,10 @@ class SpatialOnlyGraphSAGEBatch(nn.Module):
 
 
 class SpatioTemporalGraphSAGEBatch(nn.Module):
-    """Baseline encoder for `history_steps > 0`.
+    """Spatio-temporal baseline for `history_steps > 0` (legacy class name).
 
     For each history step:
-      GraphSAGE -> global mean pool
+      selected spatial encoder -> global mean pool
 
     Then:
       stacked pooled sequence -> LSTM -> linear forecast head.
@@ -134,16 +277,19 @@ class SpatioTemporalGraphSAGEBatch(nn.Module):
         use_pmean: bool = False,
         pmean_T: int | None = None,
         pmean_dim: int = 32,
+        encoder_type: str = "GraphSAGE",
     ):
         super().__init__()
         if temporal_hidden is None:
             temporal_hidden = hidden_channels
 
-        self.convs = nn.ModuleList()
-        self.convs.append(SAGEConv(in_channels, hidden_channels))
-        for _ in range(num_layers - 2):
-            self.convs.append(SAGEConv(hidden_channels, hidden_channels))
-        self.convs.append(SAGEConv(hidden_channels, hidden_channels))
+        self.encoder_type = _canonical_encoder_type(encoder_type)
+        if self.encoder_type == "GraphSAGE":
+            self.convs = _make_graphsage_layers(in_channels, hidden_channels, num_layers)
+            self.cnn_encoder = None
+        else:
+            self.convs = nn.ModuleList()
+            self.cnn_encoder = GridCNNEncoder(in_channels, hidden_channels, num_layers, dropout)
 
         self.act = nn.LeakyReLU(0.1, inplace=True)
         self.dropout = float(dropout)
@@ -176,15 +322,21 @@ class SpatioTemporalGraphSAGEBatch(nn.Module):
         edge_index = batch.edge_index
         batch_index = batch.batch
         window = x_hist.size(1)
+        grid_shape = None
+        if self.cnn_encoder is not None:
+            grid_shape = _infer_grid_batch_shape(batch, x_hist.size(0))
 
         pooled_seq = []
         for t in range(window):
             x_t = x_hist[:, t, :]
-            h = x_t
-            for conv in self.convs:
-                h = conv(h, edge_index)
-                h = self.act(h)
-                h = F.dropout(h, p=self.dropout, training=self.training)
+            if self.cnn_encoder is not None:
+                h = self.cnn_encoder(x_t, grid_shape)
+            else:
+                h = x_t
+                for conv in self.convs:
+                    h = conv(h, edge_index)
+                    h = self.act(h)
+                    h = F.dropout(h, p=self.dropout, training=self.training)
             h_pool = global_mean_pool(h, batch_index)
             pooled_seq.append(h_pool)
 
@@ -268,6 +420,7 @@ class PACT(nn.Module):
         use_pmean_tokens: bool = False,
         use_pmean_global: bool = False,
         pmean_dim: int = 32,
+        encoder_type: str = "GraphSAGE",
     ):
         super().__init__()
         self.in_channels = int(in_channels)
@@ -275,11 +428,13 @@ class PACT(nn.Module):
         self.hidden_channels = int(hidden_channels)
         self.dropout = float(dropout)
 
-        self.convs = nn.ModuleList()
-        self.convs.append(SAGEConv(self.in_channels, hidden_channels))
-        for _ in range(num_layers - 2):
-            self.convs.append(SAGEConv(hidden_channels, hidden_channels))
-        self.convs.append(SAGEConv(hidden_channels, hidden_channels))
+        self.encoder_type = _canonical_encoder_type(encoder_type)
+        if self.encoder_type == "GraphSAGE":
+            self.convs = _make_graphsage_layers(self.in_channels, hidden_channels, num_layers)
+            self.cnn_encoder = None
+        else:
+            self.convs = nn.ModuleList()
+            self.cnn_encoder = GridCNNEncoder(self.in_channels, hidden_channels, num_layers, dropout)
         self.act = nn.LeakyReLU(0.1, inplace=True)
 
         self.station_token = nn.Parameter(torch.zeros(1, hidden_channels))
@@ -364,7 +519,13 @@ class PACT(nn.Module):
         x_t: torch.Tensor,
         edge_index: torch.Tensor,
         batch_vec: torch.Tensor | None = None,
+        grid_shape: tuple[int, int, int] | None = None,
     ) -> torch.Tensor:
+        if self.cnn_encoder is not None:
+            if grid_shape is None:
+                raise ValueError("CNN encoder requires an inferred (B,H,W) grid shape.")
+            return self.cnn_encoder(x_t, grid_shape)
+
         h = x_t
         for conv in self.convs:
             h = conv(h, edge_index)
@@ -378,6 +539,9 @@ class PACT(nn.Module):
         batch_vec = batch.batch
         steps = x_hist.size(1)
         horizons = self.out_channels
+        grid_shape = None
+        if self.cnn_encoder is not None:
+            grid_shape = _infer_grid_batch_shape(batch, x_hist.size(0))
 
         if steps > self.time_embed.num_embeddings:
             raise ValueError(
@@ -398,7 +562,12 @@ class PACT(nn.Module):
         node_attn_entropy_list = []
 
         for t in range(steps):
-            node_tokens = self._encode_nodes_one_time(x_hist[:, t, :], edge_index, batch_vec)
+            node_tokens = self._encode_nodes_one_time(
+                x_hist[:, t, :],
+                edge_index,
+                batch_vec,
+                grid_shape=grid_shape,
+            )
             node_dense, mask = to_dense_batch(node_tokens, batch_vec)
 
             if return_aux:
@@ -558,6 +727,7 @@ class PACT(nn.Module):
 
 __all__ = [
     "MLP",
+    "GridCNNEncoder",
     "SpatialOnlyGraphSAGEBatch",
     "SpatioTemporalGraphSAGEBatch",
     "TransformerBlock",
