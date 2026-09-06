@@ -38,7 +38,7 @@ events.out.tfevents.*
 
 # Data / outputs
 /data/
-/Data/
+/Data
 outputs/
 results/
 predictions/
