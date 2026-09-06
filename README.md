@@ -222,13 +222,20 @@ tmux attach -t <session_name>
 Outputs go to:
 
 ```text
-logs_infer_<STATION>/<NAME>_<timestamp>/
+All_Inference_Results/<Station>_<ModelLabel>_<Source>_To_<Target>_<timestamp>/
 |-- run_infer.sh
-|-- infer_<STATION>_<test_tag>_<MODEL>_hist<HISTORY_HOURS>h_<timestamp>.log
+|-- infer_<STATION>_<target>_<MODEL>_hist<HISTORY_HOURS>h_<timestamp>.log
 `-- outputs/
     |-- metrics_per_year_<test_tag>_<station>_<model>.json
     `-- preds_<test_tag>_<station>_<model>_ALLYEARS.npz
 ```
+
+For example, evaluating the AWI-trained P3 Best checkpoint on AWI data creates
+`All_Inference_Results/Battery_P3_Best_CMIP6_AWI_To_CMIP6_AWI_<timestamp>/`.
+`Source` and `Target` are inferred from the graph-root directory names, while
+`ModelLabel` comes from `MODEL_LABEL` in the inference config. NCEP is named
+`NCEP`; the other current datasets retain their full `CMIP6_AWI`, `CMIP6_CNRM`,
+`CMIP6_EC_EARTH`, `CMIP6_MPI`, or `CMIP6_MRI` directory names.
 
 The `.npz` file contains `y_true`, `y_pred`, and `tags`. Metrics are denormalized before reporting, so RMSE and MAE are in physical target units.
 CNN output filenames append `_CNN` after the model name, non-Transformer PACT outputs append their temporal block name, and single-head PACT outputs append `_single`. GraphSAGE + Transformer + dual keeps the historical filenames unchanged.
@@ -266,6 +273,10 @@ Each item has the form:
 <run_name>|<test_root_dir>
 ```
 
+The first field remains available as a descriptive/config label. Output folder
+names are derived from `STATION`, `MODEL_LABEL`, `ROOT_DIR`, and the target graph
+path, so stale legacy labels cannot put a run in a misleading directory.
+
 Use an empty test root to fall back to the NCEP year-split test from `ROOT_DIR`:
 
 ```bash
@@ -277,7 +288,7 @@ RUNS=(
 Unlike `infer.sh`, `infer_multi.sh` runs in the current shell and does not create a tmux session. Multi-run outputs go to one directory per `RUNS` entry:
 
 ```text
-logs_infer_<STATION>/<run_name>_<timestamp>/
+All_Inference_Results/<Station>_<ModelLabel>_<Source>_To_<Target>_<timestamp>/
 |-- infer_config_used.sh
 |-- infer_<STATION>_<MODEL>_hist<HISTORY_HOURS>h_<timestamp>.log
 `-- outputs/
@@ -292,6 +303,7 @@ ROOT_DIR="./Data/Grid4_New/NCEP/graphs"
 TEST_ROOT_DIR="./Data/Grid4_New/CMIP6_AWI/graphs"
 STATION="Battery"
 MODEL="perceiver3"
+MODEL_LABEL="P3_Best"
 ENCODER_TYPE="GraphSAGE"
 TEMPORAL_BLOCK="Transformer"
 HEAD_TYPE="dual"
@@ -300,6 +312,7 @@ CKPT_PATH="./Inference_Checkpoints/NCEP_Battery_P3_Best.pth"
 BATCH_SIZE=1
 YEARS=""
 STATION_JSON_DIR="./station_json"
+INFERENCE_RESULTS_ROOT="./All_Inference_Results"
 ```
 
 Field notes:
@@ -307,6 +320,8 @@ Field notes:
 - `ROOT_DIR`: graph root used for training, validation, and checkpoint-compatible statistics.
 - `TEST_ROOT_DIR`: optional external evaluation root. If empty, inference uses the NCEP year-split test set from `ROOT_DIR`.
 - `MODEL`: either `baseline` or `perceiver3`.
+- `MODEL_LABEL`: human-readable model/checkpoint label used in run folder names, for example `P3_Best`.
+- `INFERENCE_RESULTS_ROOT`: common parent directory for every `infer.sh` and `infer_multi.sh` run.
 - `ENCODER_TYPE`: either `GraphSAGE` (the backward-compatible default) or `CNN`.
 - `TEMPORAL_BLOCK`: PACT middle block: `Transformer` (backward-compatible default), `MLP`, `LSTM`, or `GRU`.
 - `HEAD_TYPE`: PACT prediction head: `dual` (backward-compatible gated tail head) or `single` (base MLP only).
@@ -327,13 +342,13 @@ python -u infer.py \
   --station Battery \
   --station_json_dir ./station_json \
   --model perceiver3 \
+  --model_label P3_Best \
   --encoder_type GraphSAGE \
   --temporal_block Transformer \
   --head_type dual \
   --history_hours 12 \
   --batch_size 1 \
   --ckpt ./Inference_Checkpoints/NCEP_Battery_P3_Best.pth \
-  --out_dir infer_outputs \
   --save_npz \
   --amp \
   --amp_dtype bf16 \
@@ -343,6 +358,12 @@ python -u infer.py \
   --prefetch_factor 0 \
   --mp_context fork
 ```
+
+With `--out_dir` omitted, this direct call creates
+`All_Inference_Results/Battery_P3_Best_NCEP_To_CMIP6_AWI_<timestamp>/outputs/`.
+`--model_label` may also be omitted for canonical checkpoint filenames such as
+`NCEP_Battery_P3_Best.pth`; in that case `P3_Best` is inferred automatically.
+Pass `--out_dir <exact-directory>` only when an explicit output location is desired.
 
 ## Troubleshooting
 

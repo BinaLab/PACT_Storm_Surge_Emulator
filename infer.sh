@@ -35,6 +35,8 @@ set -u
 : "${STATION:=Battery}"
 : "${NAME:=stormsurge_infer}"
 : "${MODEL:=baseline}"
+: "${MODEL_LABEL:=${MODEL}}"
+: "${INFERENCE_RESULTS_ROOT:=./All_Inference_Results}"
 : "${ENCODER_TYPE:=GraphSAGE}"
 : "${TEMPORAL_BLOCK:=Transformer}"
 : "${HEAD_TYPE:=dual}"
@@ -130,6 +132,23 @@ resolve_ckpt () {
   ls -1t "${arr[@]}" 2>/dev/null | head -n 1
 }
 
+infer_dataset_tag () {
+  local root="${1%/}"
+  local leaf
+  leaf="$(basename -- "${root}")"
+  if [[ "${leaf,,}" == "graphs" ]]; then
+    basename -- "$(dirname -- "${root}")"
+  else
+    printf '%s\n' "${leaf}"
+  fi
+}
+
+safe_run_component () {
+  local value="$1"
+  value="${value//[!A-Za-z0-9._-]/_}"
+  printf '%s\n' "${value}"
+}
+
 CKPT_RESOLVED="$(resolve_ckpt "${CKPT_PATH}" || true)"
 if [[ -z "${CKPT_RESOLVED}" ]]; then
   echo "[FATAL] CKPT_PATH does not resolve to a file: ${CKPT_PATH}"
@@ -139,22 +158,26 @@ fi
 # =========================
 # Logging / tmux
 # =========================
-SESSION_BASE="${NAME}"
-LOG_ROOT="logs_infer_${STATION}"
-
 WORKDIR="$(pwd)"
+case "${INFERENCE_RESULTS_ROOT}" in
+  /*) RESULTS_ROOT="${INFERENCE_RESULTS_ROOT%/}" ;;
+  *) RESULTS_ROOT="${WORKDIR}/${INFERENCE_RESULTS_ROOT#./}"; RESULTS_ROOT="${RESULTS_ROOT%/}" ;;
+esac
+
+SOURCE_TAG="$(infer_dataset_tag "${ROOT_DIR}")"
+TARGET_ROOT="${TEST_ROOT_DIR:-${ROOT_DIR}}"
+TARGET_TAG="$(infer_dataset_tag "${TARGET_ROOT}")"
+RUN_BASE="$(safe_run_component "${STATION}_${MODEL_LABEL}_${SOURCE_TAG}_To_${TARGET_TAG}")"
 RUNSTAMP=$(date +"%Y%m%d_%H%M%S")
-RUN_DIR="${WORKDIR}/${LOG_ROOT}/${SESSION_BASE}_${RUNSTAMP}"
+RUN_FOLDER_NAME="${RUN_BASE}_${RUNSTAMP}"
+RUN_DIR="${RESULTS_ROOT}/${RUN_FOLDER_NAME}"
 mkdir -p "${RUN_DIR}"
-SESSION_NAME="${SESSION_BASE}_${RUNSTAMP}"
+SESSION_NAME="${SESSION_NAME:-${RUN_FOLDER_NAME}}"
 
 OUT_DIR="${RUN_DIR}/outputs"
 mkdir -p "${OUT_DIR}"
 
-TEST_TAG="NCEP"
-if [[ -n "${TEST_ROOT_DIR}" ]]; then
-  TEST_TAG="CMIP6"
-fi
+TEST_TAG="${TARGET_TAG}"
 
 echo "========================================="
 echo "Config file:   ${CONFIG_PATH}"
@@ -162,11 +185,13 @@ echo "Workdir:       ${WORKDIR}"
 echo "Run dir:       ${RUN_DIR}"
 echo "Out dir:       ${OUT_DIR}"
 echo "Station:       ${STATION}"
-echo "Test tag:      ${TEST_TAG}"
+echo "Model label:   ${MODEL_LABEL}"
+echo "Source:        ${SOURCE_TAG}"
+echo "Target:        ${TARGET_TAG}"
 echo "Infer script:  ${INFER_PY}"
 echo "Checkpoint:    ${CKPT_RESOLVED}"
 echo "ROOT_DIR:      ${ROOT_DIR}"
-echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<empty => NCEP year-split test>}"
+echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<empty => ROOT_DIR year-split test>}"
 echo "Model:         ${MODEL}"
 echo "Encoder:       ${ENCODER_TYPE}"
 echo "Temporal:      ${TEMPORAL_BLOCK}"
@@ -194,6 +219,7 @@ set -u
 : "\${TEST_ROOT_DIR:=}"
 : "\${STATION:=Battery}"
 : "\${MODEL:=baseline}"
+: "\${MODEL_LABEL:=\${MODEL}}"
 : "\${ENCODER_TYPE:=GraphSAGE}"
 : "\${TEMPORAL_BLOCK:=Transformer}"
 : "\${HEAD_TYPE:=dual}"
@@ -365,6 +391,7 @@ THREAD_ARGS=(--torch_threads "\${TORCH_THREADS}")
   "\${STATION_ARGS[@]}" \\
   --station_json_dir "\${STATION_JSON_DIR}" \\
   --model "\${MODEL}" \\
+  --model_label "\${MODEL_LABEL}" \\
   --encoder_type "\${ENCODER_TYPE}" \\
   --temporal_block "\${TEMPORAL_BLOCK}" \\
   --head_type "\${HEAD_TYPE}" \\

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import warnings
 from collections import defaultdict
 from datetime import datetime
@@ -18,6 +19,7 @@ from datetime import datetime
 import numpy as np
 import torch
 
+from emulator.common import infer_dataset_tag
 from emulator.data import (
     ForcingGraphStore,
     ForcingGraphView,
@@ -52,7 +54,7 @@ def main():
     parser.add_argument(
         "--root_dir",
         required=True,
-        help="Train/val root (NCEP) used for year-split test if --test_root_dir is empty",
+        help="Train/val root used for year-split test if --test_root_dir is empty",
     )
 
     # optional test root
@@ -118,7 +120,30 @@ def main():
     # timing / outputs
     parser.add_argument("--gpu_sync_timing", action="store_true", help="Synchronize CUDA for accurate timing")
     parser.add_argument("--save_npz", action="store_true")
-    parser.add_argument("--out_dir", type=str, default="infer_outputs")
+    parser.add_argument(
+        "--model_label",
+        type=str,
+        default="",
+        help=(
+            "Human-readable model/checkpoint label used in automatic run folder names "
+            "(for example, P3_Best). Empty infers it from the checkpoint filename."
+        ),
+    )
+    parser.add_argument(
+        "--inference_results_root",
+        type=str,
+        default="./All_Inference_Results",
+        help="Parent directory used when --out_dir is omitted.",
+    )
+    parser.add_argument(
+        "--out_dir",
+        type=str,
+        default="",
+        help=(
+            "Exact directory for metrics and predictions. When omitted, infer.py creates "
+            "All_Inference_Results/<Station>_<ModelLabel>_<Source>_To_<Target>_<timestamp>/outputs/."
+        ),
+    )
 
     # >>> INJECTED: optional subset of years (comma-separated), avoids hardcoding
     # If not set, we evaluate all available years in the selected test set.
@@ -131,8 +156,6 @@ def main():
     # <<< END INJECTED
 
     args = parser.parse_args()
-
-    os.makedirs(args.out_dir, exist_ok=True)
 
     # threads
     os.environ["OMP_NUM_THREADS"] = str(args.torch_threads)
@@ -200,6 +223,46 @@ def main():
     if station_key == "":
         station_key = None
 
+    # Unified inference artifact layout. NCEP remains `NCEP`; CMIP6 dataset
+    # directory names retain their `CMIP6_` prefix.
+    source_tag = infer_dataset_tag(args.root_dir) or "data"
+    target_root = args.test_root_dir.strip() or args.root_dir
+    target_tag = infer_dataset_tag(target_root) or "data"
+    station_tag = station_key or "ALL"
+
+    model_label = args.model_label.strip()
+    if not model_label:
+        checkpoint_stem = os.path.splitext(os.path.basename(args.ckpt))[0]
+        expected_prefix = f"{source_tag}_{station_tag}_"
+        if checkpoint_stem.startswith(expected_prefix):
+            model_label = checkpoint_stem[len(expected_prefix):]
+        else:
+            station_marker = f"_{station_tag}_"
+            model_label = (
+                checkpoint_stem.split(station_marker, 1)[1]
+                if station_marker in checkpoint_stem
+                else model_name
+            )
+    model_label = model_label or model_name
+    args.model_label = model_label
+
+    if args.out_dir:
+        args.out_dir = os.path.abspath(os.path.expanduser(args.out_dir))
+    else:
+        results_root = os.path.abspath(os.path.expanduser(args.inference_results_root))
+        run_base = re.sub(
+            r"[^A-Za-z0-9_.-]+",
+            "_",
+            f"{station_tag}_{model_label}_{source_tag}_To_{target_tag}",
+        ).strip("_")
+        run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.out_dir = os.path.join(
+            results_root,
+            f"{run_base}_{run_timestamp}",
+            "outputs",
+        )
+    os.makedirs(args.out_dir, exist_ok=True)
+
     print("=========================================", flush=True)
     print(f"[infer] device={device}", flush=True)
     print(f"[infer] ckpt={args.ckpt}", flush=True)
@@ -209,8 +272,12 @@ def main():
     print(f"[infer] head_type={head_type}", flush=True)
     print(f"[infer] history_hours={history_hours} (steps={history_steps})", flush=True)
     print(f"[infer] station={station_key or 'ALL'}", flush=True)
+    print(f"[infer] model_label={model_label}", flush=True)
+    print(f"[infer] source={source_tag}", flush=True)
+    print(f"[infer] target={target_tag}", flush=True)
     print(f"[infer] root_dir={args.root_dir}", flush=True)
-    print(f"[infer] test_root_dir={args.test_root_dir or '<empty => NCEP year-split test>'}", flush=True)
+    print(f"[infer] test_root_dir={args.test_root_dir or '<empty => ROOT_DIR year-split test>'}", flush=True)
+    print(f"[infer] out_dir={args.out_dir}", flush=True)
     print("=========================================", flush=True)
 
     # If you want: make CUDA report earlier if something goes wrong
@@ -271,7 +338,6 @@ def main():
             strict=args.strict_station_test,
         )
         store_for_test = store_test
-        test_tag = "CMIP6"
     else:
         store_ncep = ForcingGraphStore(
             args.root_dir,
@@ -288,7 +354,7 @@ def main():
             val_frac=0.2,
         )
         store_for_test = store_ncep
-        test_tag = "NCEP"
+    test_tag = target_tag
 
     if len(test_indices_all) == 0:
         raise RuntimeError("No test samples found (check station filter / data paths).")
@@ -578,12 +644,14 @@ def main():
     print(f"[Overall Past 1979-2014 | physical] rmse={past_rmse:.6e} mae={past_mae:.6e} (n_graphs={len(past_indices)})", flush=True)
     print(f"[Overall Future 2070-2099 | physical] rmse={fut_rmse:.6e} mae={fut_mae:.6e} (n_graphs={len(future_indices)})", flush=True)
     # write json
-    station_tag = station_key or "ALL"
     meta = dict(
         timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
         test_tag=test_tag,
+        source_tag=source_tag,
+        target_tag=target_tag,
         station=station_tag,
         model=model_name,
+        model_label=model_label,
         encoder_type=encoder_type,
         temporal_block=temporal_block,
         head_type=head_type,

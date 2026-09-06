@@ -11,7 +11,7 @@ trap cleanup INT TERM
 # - Non-slurm inference sweep (runs sequentially)
 # - Sources configs/infer_multi_config.sh
 # - Sweeps over RUNS=("Name|/path/to/test_root_dir" ...)
-# - Uses folder name: <Name>_<date>_<time>
+# - Uses folder name: <Station>_<ModelLabel>_<Source>_To_<Target>_<timestamp>
 #
 # Usage:
 #   bash infer_multi.sh configs/infer_multi_config.sh
@@ -32,6 +32,8 @@ set -u
 : "${ROOT_DIR:=./Data/NCEP/graphs}"
 : "${STATION:=Battery}"
 : "${MODEL:=baseline}"
+: "${MODEL_LABEL:=${MODEL}}"
+: "${INFERENCE_RESULTS_ROOT:=./All_Inference_Results}"
 : "${ENCODER_TYPE:=GraphSAGE}"
 : "${TEMPORAL_BLOCK:=Transformer}"
 : "${HEAD_TYPE:=dual}"
@@ -59,7 +61,6 @@ set -u
 : "${MP_CONTEXT:=fork}"
 
 : "${CKPT_PATH:=}"
-: "${LOG_ROOT_PREFIX:=logs_infer_}"
 
 case "${ENCODER_TYPE}" in
   GraphSAGE|CNN) ;;
@@ -91,6 +92,24 @@ resolve_ckpt () {
   if [[ "${#arr[@]}" -eq 0 ]]; then return 1; fi
   ls -1t "${arr[@]}" 2>/dev/null | head -n 1
 }
+
+infer_dataset_tag () {
+  local root="${1%/}"
+  local leaf
+  leaf="$(basename -- "${root}")"
+  if [[ "${leaf,,}" == "graphs" ]]; then
+    basename -- "$(dirname -- "${root}")"
+  else
+    printf '%s\n' "${leaf}"
+  fi
+}
+
+safe_run_component () {
+  local value="$1"
+  value="${value//[!A-Za-z0-9._-]/_}"
+  printf '%s\n' "${value}"
+}
+
 CKPT_RESOLVED="$(resolve_ckpt "${CKPT_PATH}" || true)"
 if [[ -z "${CKPT_RESOLVED}" ]]; then
   echo "[FATAL] CKPT_PATH does not resolve to a file: ${CKPT_PATH}"
@@ -158,7 +177,11 @@ if [[ "${#RUNS[@]}" -eq 0 ]]; then
 fi
 
 WORKDIR="$(pwd)"
-LOG_ROOT="${LOG_ROOT_PREFIX}${STATION}"
+case "${INFERENCE_RESULTS_ROOT}" in
+  /*) RESULTS_ROOT="${INFERENCE_RESULTS_ROOT%/}" ;;
+  *) RESULTS_ROOT="${WORKDIR}/${INFERENCE_RESULTS_ROOT#./}"; RESULTS_ROOT="${RESULTS_ROOT%/}" ;;
+esac
+SOURCE_TAG="$(infer_dataset_tag "${ROOT_DIR}")"
 
 echo "========================================="
 echo "host:              $(hostname)"
@@ -169,6 +192,9 @@ echo "Checkpoint:        ${CKPT_RESOLVED}"
 echo "ROOT_DIR:          ${ROOT_DIR}"
 echo "Station:           ${STATION}"
 echo "Model:             ${MODEL}"
+echo "Model label:       ${MODEL_LABEL}"
+echo "Source:            ${SOURCE_TAG}"
+echo "Results root:      ${RESULTS_ROOT}"
 echo "Encoder:           ${ENCODER_TYPE}"
 echo "Temporal:          ${TEMPORAL_BLOCK}"
 echo "Head:              ${HEAD_TYPE}"
@@ -201,8 +227,12 @@ for spec in "${RUNS[@]}"; do
     TEST_ROOT_DIR=""
   fi
 
+  TARGET_ROOT="${TEST_ROOT_DIR:-${ROOT_DIR}}"
+  TARGET_TAG="$(infer_dataset_tag "${TARGET_ROOT}")"
+  RUN_BASE="$(safe_run_component "${STATION}_${MODEL_LABEL}_${SOURCE_TAG}_To_${TARGET_TAG}")"
   RUNSTAMP=$(date +"%Y%m%d_%H%M%S")
-  RUN_DIR="${WORKDIR}/${LOG_ROOT}/${NAME}_${RUNSTAMP}"
+  RUN_FOLDER_NAME="${RUN_BASE}_${RUNSTAMP}"
+  RUN_DIR="${RESULTS_ROOT}/${RUN_FOLDER_NAME}"
   OUT_DIR="${RUN_DIR}/outputs"
   mkdir -p "${OUT_DIR}"
 
@@ -210,8 +240,11 @@ for spec in "${RUNS[@]}"; do
   cp -f "${CONFIG_PATH}" "${RUN_DIR}/infer_config_used.sh" || true
 
   echo "-----------------------------------------" | tee -a "${LOG_FILE}"
-  echo "[RUN] NAME=${NAME}"                         | tee -a "${LOG_FILE}"
-  echo "[RUN] TEST_ROOT_DIR=${TEST_ROOT_DIR:-<empty => NCEP year-split test>}" | tee -a "${LOG_FILE}"
+  echo "[RUN] CONFIG_NAME=${NAME}"                  | tee -a "${LOG_FILE}"
+  echo "[RUN] RUN_NAME=${RUN_FOLDER_NAME}"          | tee -a "${LOG_FILE}"
+  echo "[RUN] SOURCE=${SOURCE_TAG}"                 | tee -a "${LOG_FILE}"
+  echo "[RUN] TARGET=${TARGET_TAG}"                 | tee -a "${LOG_FILE}"
+  echo "[RUN] TEST_ROOT_DIR=${TEST_ROOT_DIR:-<empty => ROOT_DIR year-split test>}" | tee -a "${LOG_FILE}"
   echo "[RUN] OUT_DIR=${OUT_DIR}"                  | tee -a "${LOG_FILE}"
   echo "-----------------------------------------" | tee -a "${LOG_FILE}"
 
@@ -226,6 +259,7 @@ for spec in "${RUNS[@]}"; do
     "${STATION_ARGS[@]}" \
     --station_json_dir "${STATION_JSON_DIR}" \
     --model "${MODEL}" \
+    --model_label "${MODEL_LABEL}" \
     --encoder_type "${ENCODER_TYPE}" \
     --temporal_block "${TEMPORAL_BLOCK}" \
     --head_type "${HEAD_TYPE}" \

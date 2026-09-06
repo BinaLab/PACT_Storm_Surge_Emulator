@@ -28,4 +28,9 @@ CONDA_MODULE="anaconda"
 CONDA_SH="/software/u22/anaconda/python3.9/etc/profile.d/conda.sh"
 CONDA_ENV="torchpyg-cu124"
 
-LOG_ROOT_PREFIX="logs_infer_"
+# Human-readable checkpoint/model label used in inference run folder names.
+# Override this in a model-specific config when evaluating another variant.
+MODEL_LABEL="P3_Best"
+
+# Relative paths are resolved from the directory where the launcher is run.
+INFERENCE_RESULTS_ROOT="./All_Inference_Results"
