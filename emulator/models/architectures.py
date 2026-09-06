@@ -51,6 +51,24 @@ def _canonical_encoder_type(encoder_type: str) -> str:
     raise ValueError(f"Unknown encoder_type: {encoder_type!r}. Expected 'GraphSAGE' or 'CNN'.")
 
 
+def canonical_temporal_block(temporal_block: str) -> str:
+    """Normalize temporal block names; ``attn`` aliases the current Transformer."""
+    value = str(temporal_block).strip().lower()
+    names = {
+        "mlp": "MLP",
+        "lstm": "LSTM",
+        "gru": "GRU",
+        "attn": "Transformer",
+        "transformer": "Transformer",
+    }
+    if value in names:
+        return names[value]
+    raise ValueError(
+        f"Unknown temporal_block: {temporal_block!r}. "
+        "Expected 'MLP', 'LSTM', 'GRU', or 'Transformer' (alias: 'attn')."
+    )
+
+
 def _make_graphsage_layers(in_channels: int, hidden_channels: int, num_layers: int) -> nn.ModuleList:
     """Build the historical GraphSAGE stack without changing state-dict keys."""
     convs = nn.ModuleList()
@@ -381,13 +399,31 @@ class TransformerBlock(nn.Module):
         return x
 
 
+class TemporalMLPBlock(nn.Module):
+    """Residual token-wise MLP used as a no-middle-attention ablation."""
+
+    def __init__(self, d_model: int, ff_dim: int, dropout: float):
+        super().__init__()
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, ff_dim),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(p=float(dropout)),
+            nn.Linear(ff_dim, d_model),
+        )
+        self.drop = nn.Dropout(p=float(dropout))
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.norm(x + self.drop(self.ff(x)))
+
+
 class PACT(nn.Module):
     """Perceiver-like spatio-temporal model with optional p_mean pathways.
 
     Core flow:
       1. Node encoder encodes node tokens per timestep.
       2. Station query cross-attends node tokens.
-      3. Temporal transformer processes station memory tokens.
+      3. Selected temporal block processes station memory tokens.
       4. Horizon queries read memory via cross-attention.
       5. Peak-aware gated head predicts output horizon.
 
@@ -421,6 +457,7 @@ class PACT(nn.Module):
         use_pmean_global: bool = False,
         pmean_dim: int = 32,
         encoder_type: str = "GraphSAGE",
+        temporal_block: str = "Transformer",
     ):
         super().__init__()
         self.in_channels = int(in_channels)
@@ -453,13 +490,48 @@ class PACT(nn.Module):
 
         self.time_embed = nn.Embedding(int(max_time_steps), hidden_channels)
 
+        self.temporal_block = canonical_temporal_block(temporal_block)
+        temporal_depth = int(n_transformer_layers)
         ff_dim = int(hidden_channels * float(transformer_ff_mult))
-        self.transformer = nn.ModuleList(
-            [
-                TransformerBlock(hidden_channels, n_heads=int(n_time_read_heads), ff_dim=ff_dim, dropout=float(transformer_dropout))
-                for _ in range(int(n_transformer_layers))
-            ]
-        )
+
+        # Keep the historical attribute name and parameter keys for strict loading
+        # of existing Transformer checkpoints.
+        self.transformer = nn.ModuleList()
+        self.temporal_mlp = nn.ModuleList()
+        self.temporal_rnn = None
+        self.temporal_rnn_dropout = None
+        self.temporal_rnn_norm = None
+
+        if self.temporal_block == "Transformer":
+            self.transformer.extend(
+                TransformerBlock(
+                    hidden_channels,
+                    n_heads=int(n_time_read_heads),
+                    ff_dim=ff_dim,
+                    dropout=float(transformer_dropout),
+                )
+                for _ in range(temporal_depth)
+            )
+        elif self.temporal_block == "MLP":
+            if temporal_depth <= 0:
+                raise ValueError("MLP temporal block requires n_transformer_layers >= 1.")
+            self.temporal_mlp.extend(
+                TemporalMLPBlock(hidden_channels, ff_dim=ff_dim, dropout=float(transformer_dropout))
+                for _ in range(temporal_depth)
+            )
+        else:
+            if temporal_depth <= 0:
+                raise ValueError(f"{self.temporal_block} temporal block requires n_transformer_layers >= 1.")
+            rnn_cls = nn.LSTM if self.temporal_block == "LSTM" else nn.GRU
+            self.temporal_rnn = rnn_cls(
+                input_size=hidden_channels,
+                hidden_size=hidden_channels,
+                num_layers=temporal_depth,
+                batch_first=True,
+                dropout=float(transformer_dropout) if temporal_depth > 1 else 0.0,
+            )
+            self.temporal_rnn_dropout = nn.Dropout(p=float(transformer_dropout))
+            self.temporal_rnn_norm = nn.LayerNorm(hidden_channels)
 
         self.horizon_embed = nn.Embedding(self.out_channels, hidden_channels)
 
@@ -612,6 +684,10 @@ class PACT(nn.Module):
                 )
             p_tokens = self.pmean_token_proj(p_mean_hist.to(dtype=z_seq.dtype))
             p_tokens = self.pmean_token_ln(p_tokens)
+            # NOTE: this preserves the historical [forcing T][p_mean T] token
+            # layout. LSTM/GRU therefore process it as a length-2T sequence.
+            # Shipped configs use USE_PMEAN=0; if token-mode p_mean is enabled
+            # with a recurrent block, consider time-wise fusion/interleaving.
             z_seq = torch.cat([z_seq, p_tokens], dim=1)
 
         time_ids = torch.arange(steps, device=z_seq.device)
@@ -622,8 +698,17 @@ class PACT(nn.Module):
             z_seq = z_seq + torch.cat([time_emb, time_emb], dim=1)
 
         memory = z_seq
-        for block in self.transformer:
-            memory = block(memory)
+        if self.temporal_block == "Transformer":
+            for block in self.transformer:
+                memory = block(memory)
+        elif self.temporal_block == "MLP":
+            for block in self.temporal_mlp:
+                memory = block(memory)
+        else:
+            recurrent_memory, _ = self.temporal_rnn(memory)
+            memory = self.temporal_rnn_norm(
+                memory + self.temporal_rnn_dropout(recurrent_memory)
+            )
 
         horizon_ids = torch.arange(horizons, device=memory.device)
         horizon_query = self.horizon_embed(horizon_ids).unsqueeze(0).expand(batch_size, horizons, -1)
@@ -728,8 +813,10 @@ class PACT(nn.Module):
 __all__ = [
     "MLP",
     "GridCNNEncoder",
+    "TemporalMLPBlock",
     "SpatialOnlyGraphSAGEBatch",
     "SpatioTemporalGraphSAGEBatch",
     "TransformerBlock",
     "PACT",
+    "canonical_temporal_block",
 ]

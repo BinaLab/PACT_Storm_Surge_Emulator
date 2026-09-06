@@ -61,6 +61,7 @@ from emulator.models import (
     PACT,
     SpatialOnlyGraphSAGEBatch,
     SpatioTemporalGraphSAGEBatch,
+    canonical_temporal_block,
 )
 from emulator.training import (
     collect_test_preds_unnorm,
@@ -322,6 +323,13 @@ def main():
 
 
     # Model3 knobs
+    parser.add_argument(
+        "--temporal_block",
+        type=canonical_temporal_block,
+        default="Transformer",
+        choices=["MLP", "LSTM", "GRU", "Transformer"],
+        help="PACT middle temporal block; 'attn' is accepted as an alias for Transformer.",
+    )
     parser.add_argument("--node_read_heads", type=int, default=8)
     parser.add_argument("--time_read_heads", type=int, default=8)
     parser.add_argument("--transformer_layers", type=int, default=2)
@@ -883,7 +891,10 @@ def main():
             ).to(device)
         elif model_name == "perceiver3":
             station_feat_dim = int(station_feat.numel()) if (station_feat is not None) else 0
-            print0(f"[Model] PACT (encoder={args.encoder_type})")
+            print0(
+                f"[Model] PACT (encoder={args.encoder_type}, "
+                f"temporal_block={args.temporal_block})"
+            )
             model = PACT(
                 in_channels=in_channels,
                 hidden_channels=args.hidden_channels,
@@ -912,6 +923,7 @@ def main():
                 use_pmean_global=bool(args.use_pmean) and (args.perceiver_pmean_mode in ("global", "both")),
                 pmean_dim=int(args.pmean_dim),
                 encoder_type=args.encoder_type,
+                temporal_block=args.temporal_block,
             ).to(device)
 
         else:
@@ -1058,6 +1070,7 @@ def main():
                 "station_tag": station_tag,
                 "model": model_name,
                 "encoder_type": args.encoder_type,
+                "temporal_block": args.temporal_block,
                 "loss_tag": loss_tag,
                 "root_dir": args.root_dir,
                 "test_root_dir": args.test_root_dir,

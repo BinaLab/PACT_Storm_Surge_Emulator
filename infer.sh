@@ -36,6 +36,7 @@ set -u
 : "${NAME:=stormsurge_infer}"
 : "${MODEL:=baseline}"
 : "${ENCODER_TYPE:=GraphSAGE}"
+: "${TEMPORAL_BLOCK:=Transformer}"
 : "${HISTORY_HOURS:=12}"
 : "${BATCH_SIZE:=1}"
 : "${STATION_JSON_DIR:=./station_json}"
@@ -68,6 +69,14 @@ set -u
 case "${ENCODER_TYPE}" in
   GraphSAGE|CNN) ;;
   *) echo "[FATAL] ENCODER_TYPE must be GraphSAGE or CNN; got '${ENCODER_TYPE}'"; exit 1 ;;
+esac
+
+case "${TEMPORAL_BLOCK,,}" in
+  transformer|attn) TEMPORAL_BLOCK="Transformer" ;;
+  mlp) TEMPORAL_BLOCK="MLP" ;;
+  lstm) TEMPORAL_BLOCK="LSTM" ;;
+  gru) TEMPORAL_BLOCK="GRU" ;;
+  *) echo "[FATAL] TEMPORAL_BLOCK must be MLP, LSTM, GRU, or Transformer; got '${TEMPORAL_BLOCK}'"; exit 1 ;;
 esac
 
 init_conda () {
@@ -154,6 +163,7 @@ echo "ROOT_DIR:      ${ROOT_DIR}"
 echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<empty => NCEP year-split test>}"
 echo "Model:         ${MODEL}"
 echo "Encoder:       ${ENCODER_TYPE}"
+echo "Temporal:      ${TEMPORAL_BLOCK}"
 echo "History hours: ${HISTORY_HOURS}"
 echo "Batch size:    ${BATCH_SIZE}"
 echo "Years:         ${YEARS:-<all>}"
@@ -178,6 +188,7 @@ set -u
 : "\${STATION:=Battery}"
 : "\${MODEL:=baseline}"
 : "\${ENCODER_TYPE:=GraphSAGE}"
+: "\${TEMPORAL_BLOCK:=Transformer}"
 : "\${HISTORY_HOURS:=12}"
 : "\${BATCH_SIZE:=1}"
 : "\${STATION_JSON_DIR:=./station_json}"
@@ -186,6 +197,14 @@ set -u
 case "\${ENCODER_TYPE}" in
   GraphSAGE|CNN) ;;
   *) echo "[FATAL] ENCODER_TYPE must be GraphSAGE or CNN; got '\${ENCODER_TYPE}'"; exit 1 ;;
+esac
+
+case "\${TEMPORAL_BLOCK,,}" in
+  transformer|attn) TEMPORAL_BLOCK="Transformer" ;;
+  mlp) TEMPORAL_BLOCK="MLP" ;;
+  lstm) TEMPORAL_BLOCK="LSTM" ;;
+  gru) TEMPORAL_BLOCK="GRU" ;;
+  *) echo "[FATAL] TEMPORAL_BLOCK must be MLP, LSTM, GRU, or Transformer; got '\${TEMPORAL_BLOCK}'"; exit 1 ;;
 esac
 
 : "\${CUDA_LAUNCH_BLOCKING_FLAG:=0}"
@@ -334,6 +353,7 @@ THREAD_ARGS=(--torch_threads "\${TORCH_THREADS}")
   --station_json_dir "\${STATION_JSON_DIR}" \\
   --model "\${MODEL}" \\
   --encoder_type "\${ENCODER_TYPE}" \\
+  --temporal_block "\${TEMPORAL_BLOCK}" \\
   --history_hours "\${HISTORY_HOURS}" \\
   --batch_size "\${BATCH_SIZE}" \\
   --ckpt "\${CKPT_RESOLVED}" \\

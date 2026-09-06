@@ -4,6 +4,7 @@ TRAIN_PY="train.py"
 num_gpus=4
 TEST_ROOT_DIR=""
 ENCODER_TYPE="GraphSAGE"
+TEMPORAL_BLOCK="Transformer"
 
 BATCH_SIZE=256
 LR_LIST=("5e-3")
@@ -18,6 +19,8 @@ SHUFFLE_YEARS=0
 FUTURE_ONLY=0
 FUTURE_YEAR_THRESHOLD=2030
 
+# NOTE: token-mode p_mean becomes [forcing T][p_mean T]; recurrent temporal
+# blocks therefore see length 2T. It stays disabled in all shipped configs.
 USE_PMEAN=0
 PMEAN_DIM=32
 PERCEIVER_PMEAN_MODE="tokens"

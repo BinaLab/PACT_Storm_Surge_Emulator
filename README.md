@@ -9,7 +9,7 @@ The repository currently supports two model families:
 | `MODEL` | Use case |
 | --- | --- |
 | `baseline` | Spatial baseline using the selected GraphSAGE/CNN encoder. With `HISTORY_HOURS=0`, it is spatial only; with history, it adds an LSTM temporal head. |
-| `perceiver3` | PACT, a peak-aware cross-attention transformer using the selected spatial encoder for history-aware surge forecasting. |
+| `perceiver3` | PACT, a peak-aware cross-attention model using the selected spatial encoder and temporal block for history-aware surge forecasting. |
 
 ## Authors and Collaboration
 
@@ -121,6 +121,10 @@ Each graph file is filtered by station name when `STATION` or `--station` is set
 
 The spatial encoder is selected with `ENCODER_TYPE="GraphSAGE"` or `ENCODER_TYPE="CNN"`. The CNN path reads `grid_H` and `grid_W` from each graph, reshapes flattened node features from `(H*W, F)` to `(F, H, W)`, applies same-resolution 3x3 convolutions, and returns one `hidden_channels` token per grid node. No grid dimensions are hardcoded in the model or launcher.
 
+For PACT, `TEMPORAL_BLOCK` selects the middle sequence processor: `Transformer`, `MLP`, `LSTM`, or `GRU` (`attn` is accepted as an alias for `Transformer`). Every option receives time embeddings and maps `(B,L,hidden_channels)` back to the same shape, where `L=T` normally; the final horizon-query cross-attention is unchanged. `TRANSFORMER_LAYERS` controls the depth of every temporal option, while `TRANSFORMER_FF_MULT` only affects Transformer/MLP. The MLP option is token-wise, so the final horizon cross-attention performs its cross-time aggregation.
+
+> **p_mean note:** shipped configs use `USE_PMEAN=0`. With token-mode p_mean enabled, the historical layout is `[forcing tokens for T steps][p_mean tokens for T steps]`; LSTM/GRU therefore process a sequence of length `2T`. If this combination is used later, consider time-wise fusion or interleaving as a separate modeling choice.
+
 ## Training
 
 Training is driven by `train.sh` plus a bash config:
@@ -194,7 +198,7 @@ logs_infer_<STATION>/<NAME>_<timestamp>/
 ```
 
 The `.npz` file contains `y_true`, `y_pred`, and `tags`. Metrics are denormalized before reporting, so RMSE and MAE are in physical target units.
-CNN output filenames append `_CNN` after the model name; GraphSAGE keeps the historical filenames unchanged.
+CNN output filenames append `_CNN` after the model name, and non-Transformer PACT outputs append their temporal block name. GraphSAGE + Transformer keeps the historical filenames unchanged.
 
 ## Multi-Target Evaluation
 
@@ -256,6 +260,7 @@ TEST_ROOT_DIR="./Data/Grid4_New/CMIP6_AWI/graphs"
 STATION="Battery"
 MODEL="perceiver3"
 ENCODER_TYPE="GraphSAGE"
+TEMPORAL_BLOCK="Transformer"
 HISTORY_HOURS=12
 CKPT_PATH="./Inference_Checkpoints/NCEP_Battery_P3_Best.pth"
 BATCH_SIZE=1
@@ -269,6 +274,7 @@ Field notes:
 - `TEST_ROOT_DIR`: optional external evaluation root. If empty, inference uses the NCEP year-split test set from `ROOT_DIR`.
 - `MODEL`: either `baseline` or `perceiver3`.
 - `ENCODER_TYPE`: either `GraphSAGE` (the backward-compatible default) or `CNN`.
+- `TEMPORAL_BLOCK`: PACT middle block: `Transformer` (backward-compatible default), `MLP`, `LSTM`, or `GRU`.
 - `HISTORY_HOURS`: history window expected by the model or checkpoint. It must be a multiple of 6.
 - `CKPT_PATH`: checkpoint path. Glob patterns are allowed; the newest matching file is used.
 - `YEARS`: optional comma-separated year tags. Leave empty to evaluate every available year.
@@ -287,6 +293,7 @@ python -u infer.py \
   --station_json_dir ./station_json \
   --model perceiver3 \
   --encoder_type GraphSAGE \
+  --temporal_block Transformer \
   --history_hours 12 \
   --batch_size 1 \
   --ckpt ./Inference_Checkpoints/NCEP_Battery_P3_Best.pth \

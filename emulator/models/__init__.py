@@ -6,14 +6,18 @@ from .architectures import (
     PACT,
     SpatialOnlyGraphSAGEBatch,
     SpatioTemporalGraphSAGEBatch,
+    TemporalMLPBlock,
     TransformerBlock,
+    canonical_temporal_block,
 )
 
 __all__ = [
     "MLP",
     "GridCNNEncoder",
+    "TemporalMLPBlock",
     "SpatialOnlyGraphSAGEBatch",
     "SpatioTemporalGraphSAGEBatch",
     "TransformerBlock",
     "PACT",
+    "canonical_temporal_block",
 ]

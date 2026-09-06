@@ -48,6 +48,7 @@ set -u
 : "${STATION:=}"
 : "${MODEL:=baseline}"
 : "${ENCODER_TYPE:=GraphSAGE}"
+: "${TEMPORAL_BLOCK:=Transformer}"
 : "${STATION_JSON_DIR:=./station_json}"
 
 : "${BATCH_SIZE:=256}"
@@ -78,6 +79,14 @@ esac
 case "${ENCODER_TYPE}" in
   GraphSAGE|CNN) ;;
   *) echo "[FATAL] ENCODER_TYPE must be GraphSAGE or CNN; got '${ENCODER_TYPE}'"; exit 1 ;;
+esac
+
+case "${TEMPORAL_BLOCK,,}" in
+  transformer|attn) TEMPORAL_BLOCK="Transformer" ;;
+  mlp) TEMPORAL_BLOCK="MLP" ;;
+  lstm) TEMPORAL_BLOCK="LSTM" ;;
+  gru) TEMPORAL_BLOCK="GRU" ;;
+  *) echo "[FATAL] TEMPORAL_BLOCK must be MLP, LSTM, GRU, or Transformer; got '${TEMPORAL_BLOCK}'"; exit 1 ;;
 esac
 
 # Arrays (declare if missing)
@@ -273,6 +282,7 @@ echo "Sweep dir:     ${SWEEP_DIR}"
 echo "Train script:  ${TRAIN_PY}"
 echo "Model:         ${MODEL}"
 echo "Encoder:       ${ENCODER_TYPE}"
+echo "Temporal:      ${TEMPORAL_BLOCK}"
 echo "ROOT_DIR:      ${ROOT_DIR}"
 echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<none>}"
 echo "TRAIN_DATA_TAG:${TRAIN_DATA_TAG}"
@@ -351,6 +361,12 @@ if [[ "${ENCODER_TYPE}" == "CNN" ]]; then
   ENCODER_TAG="_encCNN"
 fi
 
+# Keep historical Transformer run names stable; label only new PACT variants.
+TEMPORAL_TAG=""
+if [[ "${MODEL}" == "perceiver3" && "${TEMPORAL_BLOCK}" != "Transformer" ]]; then
+  TEMPORAL_TAG="_t${TEMPORAL_BLOCK}"
+fi
+
 # =========================
 # Sweep loops
 # =========================
@@ -411,7 +427,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
                 SCHED_ARGS+=(--rop_metric "${ROP_METRIC}")
               fi
 
-              RUN_TAG="${STATION:-ALL}_${TRAIN_DATA_TAG}to${TEST_DATA_TAG}_${MODEL}${ENCODER_TAG}${EXTRA_TAG}${PMEAN_TAG}${SPLIT_TAG}${LOSS_TAG2}_hist${H}h_hid${HIDDEN_CHANNELS}_L${NUM_LAYERS}_bs${BATCH_SIZE}_lr${LR_CUR}_ep${EPOCHS}_sch${SCHEDULER}_xn${X_NORM}"
+              RUN_TAG="${STATION:-ALL}_${TRAIN_DATA_TAG}to${TEST_DATA_TAG}_${MODEL}${ENCODER_TAG}${TEMPORAL_TAG}${EXTRA_TAG}${PMEAN_TAG}${SPLIT_TAG}${LOSS_TAG2}_hist${H}h_hid${HIDDEN_CHANNELS}_L${NUM_LAYERS}_bs${BATCH_SIZE}_lr${LR_CUR}_ep${EPOCHS}_sch${SCHEDULER}_xn${X_NORM}"
               LOG_FILE="${SWEEP_DIR}/train_${RUN_TAG}.log"
               : > "${LOG_FILE}"
 
@@ -478,7 +494,8 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
 
               # Model-specific knobs
               if [[ "${MODEL}" == "perceiver3" ]]; then
-                BASE_CMD+=(--node_read_heads "${NODE_READ_HEADS}"
+                BASE_CMD+=(--temporal_block "${TEMPORAL_BLOCK}"
+                           --node_read_heads "${NODE_READ_HEADS}"
                            --time_read_heads "${TIME_READ_HEADS}"
                            --transformer_layers "${TRANSFORMER_LAYERS}"
                            --transformer_ff_mult "${TRANSFORMER_FF_MULT}"
