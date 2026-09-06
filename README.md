@@ -168,18 +168,31 @@ bash train.sh configs/configs_train_single/NCEP/train_config_NCEP_Battery_P3_Bes
 
 Each accumulation group averages its local-batch losses equally before the optimizer update. A final group containing only `k` microbatches divides by `k`, not by the configured accumulation value and not by raw sample count. This reproduces the existing 4-GPU DDP semantics as closely as possible under the current data-loading design, but is not expected to be numerically or sample-grouping identical to 4-rank DDP, particularly for batch-dependent tail losses. Values greater than 1 are rejected for multi-process DDP; no DDP `no_sync()` path is used.
 
-Training logs are written under:
+Training artifacts launched through `train.sh` are kept together under:
 
 ```text
-launcher_logs_<STATION>/local_<timestamp>/
-launcher_logs_<STATION>/idev_<SLURM_JOB_ID>_<timestamp>/
+All_Results/<timestamp>_<run-name>/
+|-- config_used.sh
+|-- train_<configuration>.log
+|-- best_<configuration>.pth
+|-- meta_<configuration>.json
+|-- summary_<configuration>.npz
+`-- test_preds_<configuration>.npz
 ```
 
-Checkpoints and metrics are written to station-specific output folders such as:
+`run-name` is the qsub/tmux session name when one is supplied, otherwise it is
+derived from the training config filename. `config_used.sh` contains the fully
+resolved configuration after the common config, selected config, defaults, and
+runtime overrides have been applied. A config containing a parameter sweep
+writes all of its uniquely named artifacts into the same run folder.
+
+Direct calls to `train.py` use the same layout. If `--output_dir` is omitted,
+the script creates `All_Results/<timestamp>_<run-name>/` automatically and
+writes a resolved `config_used.sh` from all parsed arguments. For example,
+`--run_tag manual_test` produces a directory shaped like:
 
 ```text
-checkpoints_Battery/
-results_Battery/
+All_Results/20260906_223000_manual_test/
 ```
 
 ## Evaluation

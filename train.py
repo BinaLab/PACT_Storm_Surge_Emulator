@@ -19,6 +19,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import sys
 import time
 import traceback
 import warnings
@@ -229,7 +231,7 @@ def main():
     parser.add_argument("--min_lr", type=float, default=1e-6, help="eta_min for cosine")
     parser.add_argument("--warmup_epochs", type=int, default=5)
     parser.add_argument("--warmup_start_factor", type=float, default=0.1,
-                        help="Linear warmup start lr factor (e.g., 0.1 means start at 10% of lr)")
+                        help="Linear warmup start lr factor (e.g., 0.1 means start at 10%% of lr)")
 
     parser.add_argument("--rop_factor", type=float, default=0.5)
     parser.add_argument("--rop_patience", type=int, default=20)
@@ -238,7 +240,7 @@ def main():
     parser.add_argument("--rop_min_lr", type=float, default=1e-6)
     parser.add_argument("--rop_metric", type=str, default="val_rmse_phys",
                         choices=["val_rmse_phys", "val_rmse_peak"],
-                        help="Metric used for ROP stepping. val_rmse_peak is top5% GT peak RMSE from rank0 full-pass (broadcasted to all ranks).")
+                        help="Metric used for ROP stepping. val_rmse_peak is top5%% GT peak RMSE from rank0 full-pass (broadcasted to all ranks).")
 
     # -------------------------
     # DataLoader knobs
@@ -353,6 +355,16 @@ def main():
 
     # Tagging
     parser.add_argument("--run_tag", type=str, default=None)
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="",
+        help=(
+            "Exact directory for all artifacts from this run. When omitted, "
+            "train.py creates All_Results/<timestamp>_<run-name>/; run-name "
+            "comes from --run_tag or the dataset/station/model arguments."
+        ),
+    )
 
     args = parser.parse_args()
     if args.grad_accum_steps < 1:
@@ -482,6 +494,80 @@ def main():
                 f"nominal_effective_batch_size={args.batch_size * args.grad_accum_steps}",
                 flush=True,
             )
+
+    # -------------------------
+    # Unified artifact directory
+    # -------------------------
+    dataset_tag = infer_dataset_tag(args.root_dir) or "data"
+    station_tag = (station_key if station_key is not None else "ALL")
+
+    # Rank 0 chooses the timestamp so direct multi-process launches also agree
+    # on one run folder and one default run tag.
+    launch_time_holder = [datetime.now().strftime("%Y%m%d_%H%M%S") if is_main_process() else ""]
+    if ddp_is_initialized():
+        dist.broadcast_object_list(launch_time_holder, src=0)
+    launch_timestamp = launch_time_holder[0]
+
+    requested_run_name = args.run_tag or f"{dataset_tag}_{station_tag}_{args.model}"
+    run_tag = args.run_tag or launch_timestamp
+
+    def _safe_slug(s: str, max_len: int = 80) -> str:
+        s = str(s) if s is not None else "run"
+        s = re.sub(r"[^A-Za-z0-9_.-]+", "-", s).strip("-")
+        if not s:
+            s = "run"
+        if len(s) <= max_len:
+            return s
+        h = hashlib.md5(s.encode("utf-8")).hexdigest()[:8]
+        return s[: max_len - 9] + "_" + h
+
+    if args.output_dir:
+        artifact_dir = os.path.abspath(os.path.expanduser(args.output_dir))
+    else:
+        direct_run_name = _safe_slug(requested_run_name)
+        artifact_dir = os.path.abspath(
+            os.path.join("All_Results", f"{launch_timestamp}_{direct_run_name}")
+        )
+
+    # Store resolved values in metadata/config snapshots, rather than the
+    # empty CLI defaults used before automatic path/tag resolution.
+    args.output_dir = artifact_dir
+    args.run_tag = run_tag
+
+    ckpt_dir = artifact_dir
+    results_dir = artifact_dir
+    os.makedirs(artifact_dir, exist_ok=True)
+    print0(f"[artifacts] output directory -> {artifact_dir}")
+
+    # train.sh writes a complete merged shell config before invoking train.py.
+    # For direct train.py usage, create an equivalent resolved snapshot from
+    # every argparse value so the run directory is still self-contained.
+    config_snapshot_path = os.path.join(artifact_dir, "config_used.sh")
+    if is_main_process() and not os.path.exists(config_snapshot_path):
+        def _shell_value(value):
+            if value is None:
+                return "''"
+            if isinstance(value, bool):
+                return "1" if value else "0"
+            return shlex.quote(str(value))
+
+        snapshot_lines = [
+            "#!/usr/bin/env bash",
+            "# Fully resolved train.py arguments.",
+            f"TRAIN_PY={shlex.quote(os.path.abspath(sys.argv[0]))}",
+        ]
+        for key, value in sorted(vars(args).items()):
+            var_name = re.sub(r"[^A-Za-z0-9_]", "_", key).upper()
+            if isinstance(value, (list, tuple)):
+                rendered = " ".join(_shell_value(item) for item in value)
+                snapshot_lines.append(f"{var_name}=({rendered})")
+            else:
+                snapshot_lines.append(f"{var_name}={_shell_value(value)}")
+
+        tmp_snapshot_path = f"{config_snapshot_path}.tmp.{os.getpid()}"
+        with open(tmp_snapshot_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(snapshot_lines) + "\n")
+        os.replace(tmp_snapshot_path, config_snapshot_path)
 
     # AMP setup
     amp_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
@@ -1008,10 +1094,6 @@ def main():
     # -------------------------
     # Output naming
     # -------------------------
-    dataset_tag = infer_dataset_tag(args.root_dir) or "data"
-    station_tag = (station_key if station_key is not None else "ALL")
-    run_tag = args.run_tag or datetime.now().strftime("%Y%m%d_%H%M%S")
-
     loss_parts = [args.loss_mode]
     if args.grad_accum_steps > 1:
         loss_parts += [f"ga{args.grad_accum_steps}"]
@@ -1065,26 +1147,10 @@ def main():
 
     loss_tag = "_".join(loss_parts)
 
-    os.makedirs(f"results_{station_tag}", exist_ok=True)
-    os.makedirs(f"checkpoints_{station_tag}", exist_ok=True)
-
     best_val_rmse_phys = float("inf")
-
-    def _safe_slug(s: str, max_len: int = 40) -> str:
-        s = str(s) if s is not None else "run"
-        s = re.sub(r"[^A-Za-z0-9_.-]+", "-", s).strip("-")
-        if not s:
-            s = "run"
-        if len(s) <= max_len:
-            return s
-        h = hashlib.md5(s.encode("utf-8")).hexdigest()[:8]
-        return s[: max_len - 9] + "_" + h
 
     cfg_id = hashlib.md5(json.dumps(vars(args), sort_keys=True).encode("utf-8")).hexdigest()[:10]
     run_slug = _safe_slug(run_tag, max_len=40)
-
-    ckpt_dir = f"checkpoints_{station_tag}"
-    os.makedirs(ckpt_dir, exist_ok=True)
 
     best_ckpt_path = os.path.join(
         ckpt_dir,
@@ -1393,10 +1459,8 @@ def main():
             station_feat=station_feat,
         )
 
-        pred_dir = f"results_{station_tag}"
-        os.makedirs(pred_dir, exist_ok=True)
         pred_path = os.path.join(
-            pred_dir,
+            results_dir,
             f"test_preds_{model_name}_{loss_tag}_{cfg_id}_{run_slug}.npz",
         )
         np.savez(pred_path, y_true=y_true, y_pred=y_pred, tags=tags)
@@ -1404,10 +1468,8 @@ def main():
 
         print(f"[Test] rmse_phys={te_rmse_phys:.6e} | mae_phys={te_mae_phys:.6e}")
 
-        summary_dir = f"results_{station_tag}"
-        os.makedirs(summary_dir, exist_ok=True)
         summary_path = os.path.join(
-            summary_dir,
+            results_dir,
             f"summary_{model_name}_{loss_tag}_{cfg_id}_{run_slug}.npz",
         )
         np.savez(
