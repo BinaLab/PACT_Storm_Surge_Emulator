@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/../train_config_common.sh"
-ROOT_DIR="./Data/Grid4_New/CMIP6_CNRM/graphs"
+ROOT_DIR="/home/exouser/media/share/PACT/Data/Grid4_New/CMIP6_CNRM/graphs"
 STATION="Battery"
 MODEL="baseline"
 HISTORY_HOURS_LIST=(0)

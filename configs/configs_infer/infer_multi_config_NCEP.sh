@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/infer_config_common.sh"
 
-ROOT_DIR="./Data/Grid4_New/NCEP/graphs"
+ROOT_DIR="/home/exouser/media/share/PACT/Data/Grid4_New/NCEP/graphs"
 STATION="Battery"
 CKPT_PATH="./Inference_Checkpoints/NCEP_Battery_P3_Best.pth"
 MODEL="perceiver3"
 HISTORY_HOURS=12
 
 RUNS=(
-  "NCEP_Battery_P3_Best_TO_NCEP|./Data/Grid4_New/NCEP/graphs"
-  "NCEP_Battery_P3_Best_TO_CMIP6_AWI|./Data/Grid4_New/CMIP6_AWI/graphs"
-  "NCEP_Battery_P3_Best_TO_CMIP6_CNRM|./Data/Grid4_New/CMIP6_CNRM/graphs"
-  "NCEP_Battery_P3_Best_TO_CMIP6_EC_EARTH|./Data/Grid4_New/CMIP6_EC_EARTH/graphs"
-  "NCEP_Battery_P3_Best_TO_CMIP6_MPI|./Data/Grid4_New/CMIP6_MPI/graphs"
-  "NCEP_Battery_P3_Best_TO_CMIP6_MRI|./Data/Grid4_New/CMIP6_MRI/graphs"
+  "NCEP_Battery_P3_Best_TO_NCEP|/home/exouser/media/share/PACT/Data/Grid4_New/NCEP/graphs"
+  "NCEP_Battery_P3_Best_TO_CMIP6_AWI|/home/exouser/media/share/PACT/Data/Grid4_New/CMIP6_AWI/graphs"
+  "NCEP_Battery_P3_Best_TO_CMIP6_CNRM|/home/exouser/media/share/PACT/Data/Grid4_New/CMIP6_CNRM/graphs"
+  "NCEP_Battery_P3_Best_TO_CMIP6_EC_EARTH|/home/exouser/media/share/PACT/Data/Grid4_New/CMIP6_EC_EARTH/graphs"
+  "NCEP_Battery_P3_Best_TO_CMIP6_MPI|/home/exouser/media/share/PACT/Data/Grid4_New/CMIP6_MPI/graphs"
+  "NCEP_Battery_P3_Best_TO_CMIP6_MRI|/home/exouser/media/share/PACT/Data/Grid4_New/CMIP6_MRI/graphs"
 )
