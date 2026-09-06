@@ -5,6 +5,7 @@ num_gpus=4
 TEST_ROOT_DIR=""
 ENCODER_TYPE="GraphSAGE"
 TEMPORAL_BLOCK="Transformer"
+HEAD_TYPE="dual"
 
 BATCH_SIZE=256
 LR_LIST=("5e-3")
@@ -43,6 +44,7 @@ SLOPE_HUBER_DELTA="0.05"
 SCHEDULER="cosine"
 ROP_METRIC="val_rmse_phys"
 
+# Dual prediction head only; ignored when HEAD_TYPE="single".
 GATE_MODE="window"
 GATE_BIAS_INIT="0.0"
 TAIL_TANH_CLIP="0"

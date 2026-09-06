@@ -69,6 +69,14 @@ def canonical_temporal_block(temporal_block: str) -> str:
     )
 
 
+def canonical_head_type(head_type: str) -> str:
+    """Normalize the public PACT prediction-head name."""
+    value = str(head_type).strip().lower()
+    if value in ("single", "dual"):
+        return value
+    raise ValueError(f"Unknown head_type: {head_type!r}. Expected 'single' or 'dual'.")
+
+
 def _make_graphsage_layers(in_channels: int, hidden_channels: int, num_layers: int) -> nn.ModuleList:
     """Build the historical GraphSAGE stack without changing state-dict keys."""
     convs = nn.ModuleList()
@@ -430,6 +438,10 @@ class PACT(nn.Module):
     Optional p_mean pathways:
       - `use_pmean_tokens`: append time-aligned p_mean tokens (context tokens).
       - `use_pmean_global`: encode full p_mean history and concatenate to head.
+
+    Prediction heads:
+      - `single`: apply the shared base MLP directly to each horizon context.
+      - `dual`: add the historical gated tail correction to that base output.
     """
 
     def __init__(
@@ -458,6 +470,7 @@ class PACT(nn.Module):
         pmean_dim: int = 32,
         encoder_type: str = "GraphSAGE",
         temporal_block: str = "Transformer",
+        head_type: str = "dual",
     ):
         super().__init__()
         self.in_channels = int(in_channels)
@@ -560,23 +573,29 @@ class PACT(nn.Module):
 
         head_in_dim = int(hidden_channels) + (self.pmean_dim if self.use_pmean_global else 0)
 
+        self.head_type = canonical_head_type(head_type)
         self.gate_mode = str(gate_mode)
         self.tail_tanh_clip = float(tail_tanh_clip)
 
         self.mlp_base = MLP(head_in_dim, head_hidden, 1, dropout=head_dropout)
-        self.mlp_tail = MLP(head_in_dim, head_hidden, 1, dropout=head_dropout)
+        if self.head_type == "dual":
+            self.mlp_tail = MLP(head_in_dim, head_hidden, 1, dropout=head_dropout)
 
-        if self.gate_mode == "window":
-            self.mlp_gate = MLP(head_in_dim, head_hidden, 1, dropout=head_dropout)
-        elif self.gate_mode == "horizon":
-            self.mlp_gate = MLP(head_in_dim, head_hidden, 1, dropout=head_dropout)
+            if self.gate_mode == "window":
+                self.mlp_gate = MLP(head_in_dim, head_hidden, 1, dropout=head_dropout)
+            elif self.gate_mode == "horizon":
+                self.mlp_gate = MLP(head_in_dim, head_hidden, 1, dropout=head_dropout)
+            else:
+                raise ValueError(f"Unknown gate_mode: {self.gate_mode}")
+
+            with torch.no_grad():
+                self.mlp_gate.fc2.bias.fill_(float(gate_bias_init))
+
+            self.alpha_logit = nn.Parameter(torch.tensor(float(alpha_init_logit), dtype=torch.float32))
         else:
-            raise ValueError(f"Unknown gate_mode: {self.gate_mode}")
-
-        with torch.no_grad():
-            self.mlp_gate.fc2.bias.fill_(float(gate_bias_init))
-
-        self.alpha_logit = nn.Parameter(torch.tensor(float(alpha_init_logit), dtype=torch.float32))
+            self.mlp_tail = None
+            self.mlp_gate = None
+            self.alpha_logit = None
 
         self.use_pmean_tokens = bool(use_pmean_tokens)
         if self.use_pmean_tokens:
@@ -758,24 +777,29 @@ class PACT(nn.Module):
             c_flat = torch.cat([c_flat, p_rep.to(dtype=c_flat.dtype)], dim=-1)
 
         y_base = self.mlp_base(c_flat).view(batch_size, horizons)
-        r_tail = self.mlp_tail(c_flat).view(batch_size, horizons)
-
-        if self.tail_tanh_clip is not None and self.tail_tanh_clip > 0:
-            clip_val = float(self.tail_tanh_clip)
-            r_tail = clip_val * torch.tanh(r_tail / clip_val)
-
-        alpha = torch.sigmoid(self.alpha_logit)
-
-        if self.gate_mode == "window":
-            g_in = context.mean(dim=1)
-            if p_global is not None:
-                g_in = torch.cat([g_in, p_global.to(dtype=g_in.dtype)], dim=-1)
-
-            gate = torch.sigmoid(self.mlp_gate(g_in)).view(batch_size, 1)
-            y = y_base + gate * (alpha * r_tail)
+        if self.head_type == "single":
+            y = y_base
+            gate = None
+            alpha = None
         else:
-            gate = torch.sigmoid(self.mlp_gate(c_flat)).view(batch_size, horizons)
-            y = y_base + gate * (alpha * r_tail)
+            r_tail = self.mlp_tail(c_flat).view(batch_size, horizons)
+
+            if self.tail_tanh_clip is not None and self.tail_tanh_clip > 0:
+                clip_val = float(self.tail_tanh_clip)
+                r_tail = clip_val * torch.tanh(r_tail / clip_val)
+
+            alpha = torch.sigmoid(self.alpha_logit)
+
+            if self.gate_mode == "window":
+                g_in = context.mean(dim=1)
+                if p_global is not None:
+                    g_in = torch.cat([g_in, p_global.to(dtype=g_in.dtype)], dim=-1)
+
+                gate = torch.sigmoid(self.mlp_gate(g_in)).view(batch_size, 1)
+                y = y_base + gate * (alpha * r_tail)
+            else:
+                gate = torch.sigmoid(self.mlp_gate(c_flat)).view(batch_size, horizons)
+                y = y_base + gate * (alpha * r_tail)
 
         if not return_aux:
             return y
@@ -795,18 +819,20 @@ class PACT(nn.Module):
         else:
             time_attn_recent = torch.zeros(batch_size, device=memory.device)
 
-        if self.gate_mode == "window":
-            gate_mean = gate.view(-1)
-        else:
-            gate_mean = gate.mean(dim=1)
-
         aux.update(
             node_attn_max_per_sample=node_attn_max.detach(),
             node_attn_entropy_per_sample=node_attn_ent.detach(),
             time_attn_recent_per_sample=time_attn_recent.detach(),
-            gate_mean_per_sample=gate_mean.detach(),
-            alpha_scalar=float(alpha.detach().cpu().item()),
         )
+        if self.head_type == "dual":
+            if self.gate_mode == "window":
+                gate_mean = gate.view(-1)
+            else:
+                gate_mean = gate.mean(dim=1)
+            aux.update(
+                gate_mean_per_sample=gate_mean.detach(),
+                alpha_scalar=float(alpha.detach().cpu().item()),
+            )
         return y, aux
 
 
@@ -818,5 +844,6 @@ __all__ = [
     "SpatioTemporalGraphSAGEBatch",
     "TransformerBlock",
     "PACT",
+    "canonical_head_type",
     "canonical_temporal_block",
 ]

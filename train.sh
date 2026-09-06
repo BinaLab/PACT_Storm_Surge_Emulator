@@ -49,6 +49,7 @@ set -u
 : "${MODEL:=baseline}"
 : "${ENCODER_TYPE:=GraphSAGE}"
 : "${TEMPORAL_BLOCK:=Transformer}"
+: "${HEAD_TYPE:=dual}"
 : "${STATION_JSON_DIR:=./station_json}"
 
 : "${BATCH_SIZE:=256}"
@@ -87,6 +88,11 @@ case "${TEMPORAL_BLOCK,,}" in
   lstm) TEMPORAL_BLOCK="LSTM" ;;
   gru) TEMPORAL_BLOCK="GRU" ;;
   *) echo "[FATAL] TEMPORAL_BLOCK must be MLP, LSTM, GRU, or Transformer; got '${TEMPORAL_BLOCK}'"; exit 1 ;;
+esac
+
+case "${HEAD_TYPE,,}" in
+  single|dual) HEAD_TYPE="${HEAD_TYPE,,}" ;;
+  *) echo "[FATAL] HEAD_TYPE must be single or dual; got '${HEAD_TYPE}'"; exit 1 ;;
 esac
 
 # Arrays (declare if missing)
@@ -153,7 +159,7 @@ if [[ -z "${SLOPE_MASK_S_LIST+x}" ]]; then SLOPE_MASK_S_LIST=("0.10"); fi
 : "${PMEAN_DIM:=32}"
 : "${PERCEIVER_PMEAN_MODE:=tokens}"
 
-# Perceiver3 knobs
+# Perceiver3 dual-head knobs (ignored when HEAD_TYPE=single)
 : "${GATE_MODE:=window}"
 : "${GATE_BIAS_INIT:=-2.0}"
 : "${TAIL_TANH_CLIP:=2.5}"
@@ -283,6 +289,7 @@ echo "Train script:  ${TRAIN_PY}"
 echo "Model:         ${MODEL}"
 echo "Encoder:       ${ENCODER_TYPE}"
 echo "Temporal:      ${TEMPORAL_BLOCK}"
+echo "Head:          ${HEAD_TYPE}"
 echo "ROOT_DIR:      ${ROOT_DIR}"
 echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<none>}"
 echo "TRAIN_DATA_TAG:${TRAIN_DATA_TAG}"
@@ -335,7 +342,14 @@ fi
 EXTRA_TAG=""
 case "${MODEL}" in
   baseline) EXTRA_TAG="" ;;
-  perceiver3) EXTRA_TAG="_nrh${NODE_READ_HEADS}_trh${TIME_READ_HEADS}_L${TRANSFORMER_LAYERS}_ff${TRANSFORMER_FF_MULT}_td${TRANSFORMER_DROPOUT}_gm${GATE_MODE}" ;;
+  perceiver3)
+    EXTRA_TAG="_nrh${NODE_READ_HEADS}_trh${TIME_READ_HEADS}_L${TRANSFORMER_LAYERS}_ff${TRANSFORMER_FF_MULT}_td${TRANSFORMER_DROPOUT}"
+    if [[ "${HEAD_TYPE}" == "dual" ]]; then
+      EXTRA_TAG+="_gm${GATE_MODE}"
+    else
+      EXTRA_TAG+="_hsingle"
+    fi
+    ;;
   *) echo "[FATAL] Unknown MODEL='${MODEL}'. Use baseline|perceiver3"; exit 1 ;;
 esac
 
@@ -494,7 +508,8 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
 
               # Model-specific knobs
               if [[ "${MODEL}" == "perceiver3" ]]; then
-                BASE_CMD+=(--temporal_block "${TEMPORAL_BLOCK}"
+                BASE_CMD+=(--head_type "${HEAD_TYPE}"
+                           --temporal_block "${TEMPORAL_BLOCK}"
                            --node_read_heads "${NODE_READ_HEADS}"
                            --time_read_heads "${TIME_READ_HEADS}"
                            --transformer_layers "${TRANSFORMER_LAYERS}"

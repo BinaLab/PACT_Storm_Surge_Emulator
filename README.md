@@ -123,6 +123,8 @@ The spatial encoder is selected with `ENCODER_TYPE="GraphSAGE"` or `ENCODER_TYPE
 
 For PACT, `TEMPORAL_BLOCK` selects the middle sequence processor: `Transformer`, `MLP`, `LSTM`, or `GRU` (`attn` is accepted as an alias for `Transformer`). Every option receives time embeddings and maps `(B,L,hidden_channels)` back to the same shape, where `L=T` normally; the final horizon-query cross-attention is unchanged. `TRANSFORMER_LAYERS` controls the depth of every temporal option, while `TRANSFORMER_FF_MULT` only affects Transformer/MLP. The MLP option is token-wise, so the final horizon cross-attention performs its cross-time aggregation.
 
+`HEAD_TYPE` selects PACT's final prediction head. `single` sends each horizon context directly through the existing base MLP. `dual` is the backward-compatible default and retains the gated tail correction: `y = y_base + gate * sigmoid(alpha_logit) * r_tail`. Both variants consume the same `c_flat` after optional global p_mean concatenation and use the same base-head width and `HEAD_DROPOUT`; `GATE_MODE`, `GATE_BIAS_INIT`, `TAIL_TANH_CLIP`, and `ALPHA_INIT_LOGIT` only affect `dual`.
+
 > **p_mean note:** shipped configs use `USE_PMEAN=0`. With token-mode p_mean enabled, the historical layout is `[forcing tokens for T steps][p_mean tokens for T steps]`; LSTM/GRU therefore process a sequence of length `2T`. If this combination is used later, consider time-wise fusion or interleaving as a separate modeling choice.
 
 ## Training
@@ -198,7 +200,7 @@ logs_infer_<STATION>/<NAME>_<timestamp>/
 ```
 
 The `.npz` file contains `y_true`, `y_pred`, and `tags`. Metrics are denormalized before reporting, so RMSE and MAE are in physical target units.
-CNN output filenames append `_CNN` after the model name, and non-Transformer PACT outputs append their temporal block name. GraphSAGE + Transformer keeps the historical filenames unchanged.
+CNN output filenames append `_CNN` after the model name, non-Transformer PACT outputs append their temporal block name, and single-head PACT outputs append `_single`. GraphSAGE + Transformer + dual keeps the historical filenames unchanged.
 
 ## Multi-Target Evaluation
 
@@ -261,6 +263,7 @@ STATION="Battery"
 MODEL="perceiver3"
 ENCODER_TYPE="GraphSAGE"
 TEMPORAL_BLOCK="Transformer"
+HEAD_TYPE="dual"
 HISTORY_HOURS=12
 CKPT_PATH="./Inference_Checkpoints/NCEP_Battery_P3_Best.pth"
 BATCH_SIZE=1
@@ -275,6 +278,7 @@ Field notes:
 - `MODEL`: either `baseline` or `perceiver3`.
 - `ENCODER_TYPE`: either `GraphSAGE` (the backward-compatible default) or `CNN`.
 - `TEMPORAL_BLOCK`: PACT middle block: `Transformer` (backward-compatible default), `MLP`, `LSTM`, or `GRU`.
+- `HEAD_TYPE`: PACT prediction head: `dual` (backward-compatible gated tail head) or `single` (base MLP only).
 - `HISTORY_HOURS`: history window expected by the model or checkpoint. It must be a multiple of 6.
 - `CKPT_PATH`: checkpoint path. Glob patterns are allowed; the newest matching file is used.
 - `YEARS`: optional comma-separated year tags. Leave empty to evaluate every available year.
@@ -294,6 +298,7 @@ python -u infer.py \
   --model perceiver3 \
   --encoder_type GraphSAGE \
   --temporal_block Transformer \
+  --head_type dual \
   --history_hours 12 \
   --batch_size 1 \
   --ckpt ./Inference_Checkpoints/NCEP_Battery_P3_Best.pth \

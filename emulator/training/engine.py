@@ -59,6 +59,11 @@ def train_one_epoch_ddp(
     """Run one training epoch and return normalized + physical metrics."""
     model.train()
     criterion = nn.MSELoss()
+    model_raw = model.module if isinstance(model, DDP) else model
+    collect_gate_stats = (
+        _is_perceiver_family(model_name)
+        and getattr(model_raw, "head_type", "dual") == "dual"
+    )
 
     total_mse_norm_sum = 0.0
     total_mse_phys_sum = 0.0
@@ -227,7 +232,7 @@ def train_one_epoch_ddp(
         total_mae_phys_sum += float(mae_phys.item()) * bs
         total_samples += bs
 
-        if _is_perceiver_family(model_name):
+        if collect_gate_stats:
             with torch.no_grad():
                 _, aux = model(batch, station_feat=station_feat, return_aux=True)
                 g = aux.get("gate_mean_per_sample", None)

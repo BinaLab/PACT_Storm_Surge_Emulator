@@ -8,6 +8,7 @@ from .architectures import (
     SpatioTemporalGraphSAGEBatch,
     TemporalMLPBlock,
     TransformerBlock,
+    canonical_head_type,
     canonical_temporal_block,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "SpatioTemporalGraphSAGEBatch",
     "TransformerBlock",
     "PACT",
+    "canonical_head_type",
     "canonical_temporal_block",
 ]

@@ -33,6 +33,7 @@ from emulator.models import (
     PACT,
     SpatialOnlyGraphSAGEBatch,
     SpatioTemporalGraphSAGEBatch,
+    canonical_head_type,
     canonical_temporal_block,
 )
 
@@ -86,6 +87,16 @@ def main():
         help=(
             "Expected PACT temporal block. Empty reads checkpoint args; legacy checkpoints "
             "default to Transformer. 'attn' is accepted as an alias."
+        ),
+    )
+    parser.add_argument(
+        "--head_type",
+        type=canonical_head_type,
+        default=None,
+        choices=["single", "dual"],
+        help=(
+            "Expected PACT prediction head. Empty reads checkpoint args; legacy checkpoints "
+            "default to dual."
         ),
     )
     parser.add_argument("--history_hours", type=int, default=-1, help="Override history_hours; -1 uses ckpt args")
@@ -169,6 +180,14 @@ def main():
             f"checkpoint={checkpoint_temporal_block!r}, requested={args.temporal_block!r}. "
             "Use a checkpoint trained with the requested temporal block."
         )
+    checkpoint_head_type = canonical_head_type(ckpt_args.get("head_type") or "dual")
+    head_type = args.head_type or checkpoint_head_type
+    if model_name == "perceiver3" and args.head_type and args.head_type != checkpoint_head_type:
+        raise ValueError(
+            "Head type override does not match the checkpoint: "
+            f"checkpoint={checkpoint_head_type!r}, requested={args.head_type!r}. "
+            "Use a checkpoint trained with the requested prediction head."
+        )
     history_hours = args.history_hours if args.history_hours >= 0 else int(ckpt_args.get("history_hours", 0))
     if history_hours % 6 != 0:
         raise ValueError(f"history_hours must be multiple of 6, got {history_hours}")
@@ -187,6 +206,7 @@ def main():
     print(f"[infer] model={model_name}", flush=True)
     print(f"[infer] encoder_type={encoder_type}", flush=True)
     print(f"[infer] temporal_block={temporal_block}", flush=True)
+    print(f"[infer] head_type={head_type}", flush=True)
     print(f"[infer] history_hours={history_hours} (steps={history_steps})", flush=True)
     print(f"[infer] station={station_key or 'ALL'}", flush=True)
     print(f"[infer] root_dir={args.root_dir}", flush=True)
@@ -357,6 +377,7 @@ def main():
             pmean_dim=pmean_dim,
             encoder_type=encoder_type,
             temporal_block=temporal_block,
+            head_type=head_type,
         )
     else:
         raise ValueError(
@@ -565,6 +586,7 @@ def main():
         model=model_name,
         encoder_type=encoder_type,
         temporal_block=temporal_block,
+        head_type=head_type,
         history_hours=int(history_hours),
         ckpt=args.ckpt,
         root_dir=args.root_dir,
@@ -584,7 +606,8 @@ def main():
         if model_name != "perceiver3" or temporal_block == "Transformer"
         else f"_{temporal_block}"
     )
-    model_file_tag = f"{encoder_file_tag}{temporal_file_tag}"
+    head_file_tag = "" if model_name != "perceiver3" or head_type == "dual" else f"_{head_type}"
+    model_file_tag = f"{encoder_file_tag}{temporal_file_tag}{head_file_tag}"
     json_path = os.path.join(
         args.out_dir,
         f"metrics_per_year_{test_tag}_{station_tag}_{model_name}{model_file_tag}.json",

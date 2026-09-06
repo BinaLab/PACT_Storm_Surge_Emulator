@@ -37,6 +37,7 @@ set -u
 : "${MODEL:=baseline}"
 : "${ENCODER_TYPE:=GraphSAGE}"
 : "${TEMPORAL_BLOCK:=Transformer}"
+: "${HEAD_TYPE:=dual}"
 : "${HISTORY_HOURS:=12}"
 : "${BATCH_SIZE:=1}"
 : "${STATION_JSON_DIR:=./station_json}"
@@ -77,6 +78,11 @@ case "${TEMPORAL_BLOCK,,}" in
   lstm) TEMPORAL_BLOCK="LSTM" ;;
   gru) TEMPORAL_BLOCK="GRU" ;;
   *) echo "[FATAL] TEMPORAL_BLOCK must be MLP, LSTM, GRU, or Transformer; got '${TEMPORAL_BLOCK}'"; exit 1 ;;
+esac
+
+case "${HEAD_TYPE,,}" in
+  single|dual) HEAD_TYPE="${HEAD_TYPE,,}" ;;
+  *) echo "[FATAL] HEAD_TYPE must be single or dual; got '${HEAD_TYPE}'"; exit 1 ;;
 esac
 
 init_conda () {
@@ -164,6 +170,7 @@ echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<empty => NCEP year-split test>}"
 echo "Model:         ${MODEL}"
 echo "Encoder:       ${ENCODER_TYPE}"
 echo "Temporal:      ${TEMPORAL_BLOCK}"
+echo "Head:          ${HEAD_TYPE}"
 echo "History hours: ${HISTORY_HOURS}"
 echo "Batch size:    ${BATCH_SIZE}"
 echo "Years:         ${YEARS:-<all>}"
@@ -189,6 +196,7 @@ set -u
 : "\${MODEL:=baseline}"
 : "\${ENCODER_TYPE:=GraphSAGE}"
 : "\${TEMPORAL_BLOCK:=Transformer}"
+: "\${HEAD_TYPE:=dual}"
 : "\${HISTORY_HOURS:=12}"
 : "\${BATCH_SIZE:=1}"
 : "\${STATION_JSON_DIR:=./station_json}"
@@ -205,6 +213,11 @@ case "\${TEMPORAL_BLOCK,,}" in
   lstm) TEMPORAL_BLOCK="LSTM" ;;
   gru) TEMPORAL_BLOCK="GRU" ;;
   *) echo "[FATAL] TEMPORAL_BLOCK must be MLP, LSTM, GRU, or Transformer; got '\${TEMPORAL_BLOCK}'"; exit 1 ;;
+esac
+
+case "\${HEAD_TYPE,,}" in
+  single|dual) HEAD_TYPE="\${HEAD_TYPE,,}" ;;
+  *) echo "[FATAL] HEAD_TYPE must be single or dual; got '\${HEAD_TYPE}'"; exit 1 ;;
 esac
 
 : "\${CUDA_LAUNCH_BLOCKING_FLAG:=0}"
@@ -354,6 +367,7 @@ THREAD_ARGS=(--torch_threads "\${TORCH_THREADS}")
   --model "\${MODEL}" \\
   --encoder_type "\${ENCODER_TYPE}" \\
   --temporal_block "\${TEMPORAL_BLOCK}" \\
+  --head_type "\${HEAD_TYPE}" \\
   --history_hours "\${HISTORY_HOURS}" \\
   --batch_size "\${BATCH_SIZE}" \\
   --ckpt "\${CKPT_RESOLVED}" \\

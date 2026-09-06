@@ -61,6 +61,7 @@ from emulator.models import (
     PACT,
     SpatialOnlyGraphSAGEBatch,
     SpatioTemporalGraphSAGEBatch,
+    canonical_head_type,
     canonical_temporal_block,
 )
 from emulator.training import (
@@ -313,9 +314,16 @@ def main():
         ),
     )
     # Common head knobs
+    parser.add_argument(
+        "--head_type",
+        type=canonical_head_type,
+        default="dual",
+        choices=["single", "dual"],
+        help="PACT prediction head: single base MLP or the existing gated dual head.",
+    )
     parser.add_argument("--head_dropout", type=float, default=0.0)
 
-    # Peak-aware head / gate knobs (used by perceiver3)
+    # Peak-aware gate/tail knobs (used by PACT's dual head only)
     parser.add_argument("--gate_mode", type=str, default="window", choices=["window", "horizon"])
     parser.add_argument("--gate_bias_init", type=float, default=-2.0)
     parser.add_argument("--tail_tanh_clip", type=float, default=2.5)
@@ -893,7 +901,7 @@ def main():
             station_feat_dim = int(station_feat.numel()) if (station_feat is not None) else 0
             print0(
                 f"[Model] PACT (encoder={args.encoder_type}, "
-                f"temporal_block={args.temporal_block})"
+                f"temporal_block={args.temporal_block}, head_type={args.head_type})"
             )
             model = PACT(
                 in_channels=in_channels,
@@ -924,6 +932,7 @@ def main():
                 pmean_dim=int(args.pmean_dim),
                 encoder_type=args.encoder_type,
                 temporal_block=args.temporal_block,
+                head_type=args.head_type,
             ).to(device)
 
         else:
@@ -1013,7 +1022,10 @@ def main():
             loss_parts += [f"del{float(args.slope_huber_delta):g}"]
 
     if args.model == "perceiver3":
-        loss_parts += [f"gm{args.gate_mode}"]
+        if args.head_type == "dual":
+            loss_parts += [f"gm{args.gate_mode}"]
+        else:
+            loss_parts += ["hsingle"]
 
     # p_mean injection: include p_mean injection mode in run tag (for clean ablations)
     if bool(args.use_pmean):
@@ -1071,6 +1083,7 @@ def main():
                 "model": model_name,
                 "encoder_type": args.encoder_type,
                 "temporal_block": args.temporal_block,
+                "head_type": args.head_type,
                 "loss_tag": loss_tag,
                 "root_dir": args.root_dir,
                 "test_root_dir": args.test_root_dir,
@@ -1209,20 +1222,12 @@ def main():
                 )
 
             if model_name == "perceiver3":
-                gtr = gate_mean_train if gate_mean_train is not None else float("nan")
-
                 nm_all = extra.get("node_attn_max_all", None) if extra else None
                 nm_pk = extra.get("node_attn_max_peak", None) if extra else None
                 ne_all = extra.get("node_attn_entropy_all", None) if extra else None
                 ne_pk = extra.get("node_attn_entropy_peak", None) if extra else None
                 tr_all = extra.get("time_attn_recent_all", None) if extra else None
                 tr_pk = extra.get("time_attn_recent_peak", None) if extra else None
-
-                gall = extra.get("gate_mean_all", None) if extra else None
-                gpk = extra.get("gate_mean_peak", None) if extra else None
-
-                raw_model = model.module if isinstance(model, DDP) else model
-                alpha = float(torch.sigmoid(raw_model.alpha_logit).detach().cpu().item())
 
                 msg += (
                     f"node_attn_max(val_all)={(nm_all if nm_all is not None else float('nan')):.3f} | "
@@ -1231,12 +1236,20 @@ def main():
                     f"node_attn_entropy(val_peak)={(ne_pk if ne_pk is not None else float('nan')):.3f} | "
                     f"time_attn_recent(val_all)={(tr_all if tr_all is not None else float('nan')):.3f} | "
                     f"time_attn_recent(val_peak)={(tr_pk if tr_pk is not None else float('nan')):.3f} | "
-                    f"gate_mean(train)={gtr:.3f} | "
-                    f"gate_mean(val_all)={(gall if gall is not None else float('nan')):.3f} | "
-                    f"gate_mean(val_peak)={(gpk if gpk is not None else float('nan')):.3f} | "
-                    f"alpha={alpha:.3f} | "
-                    f"tail_clip={args.tail_tanh_clip:.2f} | "
                 )
+                if args.head_type == "dual":
+                    gtr = gate_mean_train if gate_mean_train is not None else float("nan")
+                    gall = extra.get("gate_mean_all", None) if extra else None
+                    gpk = extra.get("gate_mean_peak", None) if extra else None
+                    raw_model = model.module if isinstance(model, DDP) else model
+                    alpha = float(torch.sigmoid(raw_model.alpha_logit).detach().cpu().item())
+                    msg += (
+                        f"gate_mean(train)={gtr:.3f} | "
+                        f"gate_mean(val_all)={(gall if gall is not None else float('nan')):.3f} | "
+                        f"gate_mean(val_peak)={(gpk if gpk is not None else float('nan')):.3f} | "
+                        f"alpha={alpha:.3f} | "
+                        f"tail_clip={args.tail_tanh_clip:.2f} | "
+                    )
 
             msg += f"lr={cur_lr:.3e} | epoch_time={epoch_dt:.1f}s"
             print(msg)
