@@ -53,6 +53,7 @@ set -u
 : "${STATION_JSON_DIR:=./station_json}"
 
 : "${BATCH_SIZE:=256}"
+: "${GRAD_ACCUM_STEPS:=1}"
 : "${EPOCHS:=300}"
 : "${HIDDEN_CHANNELS:=64}"
 : "${NUM_LAYERS:=2}"
@@ -94,6 +95,11 @@ case "${HEAD_TYPE,,}" in
   single|dual) HEAD_TYPE="${HEAD_TYPE,,}" ;;
   *) echo "[FATAL] HEAD_TYPE must be single or dual; got '${HEAD_TYPE}'"; exit 1 ;;
 esac
+
+if [[ ! "${GRAD_ACCUM_STEPS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[FATAL] GRAD_ACCUM_STEPS must be a positive integer; got '${GRAD_ACCUM_STEPS}'"
+  exit 1
+fi
 
 # Arrays (declare if missing)
 if [[ -z "${LR_LIST+x}" ]]; then LR_LIST=("3e-3"); fi
@@ -243,6 +249,11 @@ if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   fi
 fi
 
+if (( GRAD_ACCUM_STEPS > 1 && num_gpus != 1 )); then
+  echo "[FATAL] GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS} is supported only with num_gpus=1; got num_gpus=${num_gpus}."
+  exit 1
+fi
+
 MASTER_ADDR="127.0.0.1"
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then
   MASTER_PORT=$((29500 + (SLURM_JOB_ID % 1000)))
@@ -290,6 +301,9 @@ echo "Model:         ${MODEL}"
 echo "Encoder:       ${ENCODER_TYPE}"
 echo "Temporal:      ${TEMPORAL_BLOCK}"
 echo "Head:          ${HEAD_TYPE}"
+if (( GRAD_ACCUM_STEPS > 1 )); then
+  echo "Grad accum:    ${GRAD_ACCUM_STEPS} (nominal effective batch=$((BATCH_SIZE * GRAD_ACCUM_STEPS)))"
+fi
 echo "ROOT_DIR:      ${ROOT_DIR}"
 echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<none>}"
 echo "TRAIN_DATA_TAG:${TRAIN_DATA_TAG}"
@@ -381,6 +395,12 @@ if [[ "${MODEL}" == "perceiver3" && "${TEMPORAL_BLOCK}" != "Transformer" ]]; the
   TEMPORAL_TAG="_t${TEMPORAL_BLOCK}"
 fi
 
+# Keep historical run names stable when accumulation is disabled.
+ACCUM_TAG=""
+if (( GRAD_ACCUM_STEPS > 1 )); then
+  ACCUM_TAG="_ga${GRAD_ACCUM_STEPS}"
+fi
+
 # =========================
 # Sweep loops
 # =========================
@@ -441,7 +461,7 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
                 SCHED_ARGS+=(--rop_metric "${ROP_METRIC}")
               fi
 
-              RUN_TAG="${STATION:-ALL}_${TRAIN_DATA_TAG}to${TEST_DATA_TAG}_${MODEL}${ENCODER_TAG}${TEMPORAL_TAG}${EXTRA_TAG}${PMEAN_TAG}${SPLIT_TAG}${LOSS_TAG2}_hist${H}h_hid${HIDDEN_CHANNELS}_L${NUM_LAYERS}_bs${BATCH_SIZE}_lr${LR_CUR}_ep${EPOCHS}_sch${SCHEDULER}_xn${X_NORM}"
+              RUN_TAG="${STATION:-ALL}_${TRAIN_DATA_TAG}to${TEST_DATA_TAG}_${MODEL}${ENCODER_TAG}${TEMPORAL_TAG}${ACCUM_TAG}${EXTRA_TAG}${PMEAN_TAG}${SPLIT_TAG}${LOSS_TAG2}_hist${H}h_hid${HIDDEN_CHANNELS}_L${NUM_LAYERS}_bs${BATCH_SIZE}_lr${LR_CUR}_ep${EPOCHS}_sch${SCHEDULER}_xn${X_NORM}"
               LOG_FILE="${SWEEP_DIR}/train_${RUN_TAG}.log"
               : > "${LOG_FILE}"
 
@@ -483,6 +503,9 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
 
               [[ -n "${STATION}" ]]       && BASE_CMD+=(--station "${STATION}")
               [[ -n "${TEST_ROOT_DIR}" ]] && BASE_CMD+=(--test_root_dir "${TEST_ROOT_DIR}")
+              if (( GRAD_ACCUM_STEPS > 1 )); then
+                BASE_CMD+=(--grad_accum_steps "${GRAD_ACCUM_STEPS}")
+              fi
 
               # p_mean injection (ablation)
               if [[ "${USE_PMEAN}" == "1" ]]; then

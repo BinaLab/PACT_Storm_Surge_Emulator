@@ -55,8 +55,13 @@ def train_one_epoch_ddp(
     slope_robust: str = "charb",
     slope_charb_eps: float = 1e-3,
     slope_huber_delta: float = 0.05,
+    grad_accum_steps: int = 1,
 ):
     """Run one training epoch and return normalized + physical metrics."""
+    grad_accum_steps = int(grad_accum_steps)
+    if grad_accum_steps < 1:
+        raise ValueError(f"grad_accum_steps must be >= 1, got {grad_accum_steps}.")
+
     model.train()
     criterion = nn.MSELoss()
     model_raw = model.module if isinstance(model, DDP) else model
@@ -80,7 +85,8 @@ def train_one_epoch_ddp(
     tail_use_wmse = core_loss_mode in ("wmse_tail", "mse_wtail")
     use_tail = core_loss_mode in ("mse_tail", "wmse_tail", "mse_wtail")
 
-    for batch in loader:
+    num_microbatches = len(loader)
+    for microbatch_idx, batch in enumerate(loader):
         batch = batch.to(device, non_blocking=True)
 
         normalize_inputs_inplace(
@@ -100,7 +106,19 @@ def train_one_epoch_ddp(
         y_raw = batch.y.float()
         y_norm = normalize_targets(y_raw, y_mean, y_std)
 
-        optimizer.zero_grad(set_to_none=True)
+        # Mirror DDP's equal weighting of rank-local mean losses. In particular,
+        # do not sample-weight uneven microbatches: tail losses are reduced inside
+        # each local batch. A short final group is therefore divided by its actual
+        # number of microbatches rather than by the configured accumulation count.
+        group_start = (microbatch_idx // grad_accum_steps) * grad_accum_steps
+        group_size = min(grad_accum_steps, num_microbatches - group_start)
+        should_step = (
+            (microbatch_idx + 1) % grad_accum_steps == 0
+            or microbatch_idx + 1 == num_microbatches
+        )
+
+        if microbatch_idx % grad_accum_steps == 0:
+            optimizer.zero_grad(set_to_none=True)
 
         if use_amp:
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
@@ -155,14 +173,17 @@ def train_one_epoch_ddp(
                 )
 
             loss = base_loss + float(tail_lambda) * tail_loss + float(slope_lambda) * slope_loss
+            backward_loss = loss if grad_accum_steps == 1 else loss / float(group_size)
 
             if scaler is not None and scaler.is_enabled():
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                scaler.scale(backward_loss).backward()
+                if should_step:
+                    scaler.step(optimizer)
+                    scaler.update()
             else:
-                loss.backward()
-                optimizer.step()
+                backward_loss.backward()
+                if should_step:
+                    optimizer.step()
         else:
             if _is_perceiver_family(model_name):
                 pred_norm = model(batch, station_feat=station_feat, return_aux=False)
@@ -215,8 +236,10 @@ def train_one_epoch_ddp(
                 )
 
             loss = base_loss + float(tail_lambda) * tail_loss + float(slope_lambda) * slope_loss
-            loss.backward()
-            optimizer.step()
+            backward_loss = loss if grad_accum_steps == 1 else loss / float(group_size)
+            backward_loss.backward()
+            if should_step:
+                optimizer.step()
 
         with torch.no_grad():
             err_norm = pred_norm.detach().float() - y_norm.detach().float()

@@ -150,6 +150,24 @@ bash train.sh configs/configs_train/NCEP/train_config_NCEP_Battery_Baseline_12h.
 
 `train.sh` launches directly with Python for one GPU. For multi-GPU runs, set `num_gpus` in the config; the launcher uses `python -m torch.distributed.run`.
 
+### Single-GPU gradient accumulation
+
+Gradient accumulation is disabled by default (`GRAD_ACCUM_STEPS=1`) and is intentionally restricted to `world_size=1`. The configs under `configs/configs_train_single/` mirror `configs/configs_train/` while requesting a nominal effective batch size of 1024 without changing the microbatch size or learning rate:
+
+```bash
+num_gpus=1
+BATCH_SIZE=256
+GRAD_ACCUM_STEPS=4
+```
+
+For example:
+
+```bash
+bash train.sh configs/configs_train_single/NCEP/train_config_NCEP_Battery_P3_Best.sh
+```
+
+Each accumulation group averages its local-batch losses equally before the optimizer update. A final group containing only `k` microbatches divides by `k`, not by the configured accumulation value and not by raw sample count. This reproduces the existing 4-GPU DDP semantics as closely as possible under the current data-loading design, but is not expected to be numerically or sample-grouping identical to 4-rank DDP, particularly for batch-dependent tail losses. Values greater than 1 are rejected for multi-process DDP; no DDP `no_sync()` path is used.
+
 Training logs are written under:
 
 ```text

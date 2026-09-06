@@ -134,6 +134,12 @@ def main():
     # Training knobs
     # -------------------------
     parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument(
+        "--grad_accum_steps",
+        type=int,
+        default=1,
+        help="Single-process gradient accumulation steps; values >1 are rejected when world_size != 1.",
+    )
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--lr", type=float, default=3e-3)
     parser.add_argument("--hidden_channels", type=int, default=64)
@@ -349,6 +355,8 @@ def main():
     parser.add_argument("--run_tag", type=str, default=None)
 
     args = parser.parse_args()
+    if args.grad_accum_steps < 1:
+        parser.error(f"--grad_accum_steps must be >= 1, got {args.grad_accum_steps}.")
 
     # -------------------------
     # Resolve station filter alias
@@ -387,6 +395,13 @@ def main():
         local_rank = 0
         rank = 0
         world_size = 1
+
+    if args.grad_accum_steps > 1 and world_size != 1:
+        raise RuntimeError(
+            "Gradient accumulation is intentionally supported only for world_size == 1: "
+            f"got grad_accum_steps={args.grad_accum_steps}, world_size={world_size}. "
+            "Set --grad_accum_steps 1 for DDP or launch a single training process."
+        )
 
     use_cuda = torch.cuda.is_available()
 
@@ -460,6 +475,13 @@ def main():
             f"visible_cuda={torch.cuda.device_count() if use_cuda else 0} chosen_cuda_id={cuda_id} device={device}",
             flush=True
         )
+        if args.grad_accum_steps > 1:
+            print(
+                f"[GradAccum] micro_batch_size={args.batch_size} "
+                f"steps={args.grad_accum_steps} "
+                f"nominal_effective_batch_size={args.batch_size * args.grad_accum_steps}",
+                flush=True,
+            )
 
     # AMP setup
     amp_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
@@ -991,6 +1013,8 @@ def main():
     run_tag = args.run_tag or datetime.now().strftime("%Y%m%d_%H%M%S")
 
     loss_parts = [args.loss_mode]
+    if args.grad_accum_steps > 1:
+        loss_parts += [f"ga{args.grad_accum_steps}"]
 
     tag_use_slope = str(args.loss_mode).endswith("_slope")
     tag_core_loss = str(args.loss_mode)[:-6] if tag_use_slope else str(args.loss_mode)
@@ -1084,6 +1108,7 @@ def main():
                 "encoder_type": args.encoder_type,
                 "temporal_block": args.temporal_block,
                 "head_type": args.head_type,
+                "grad_accum_steps": int(args.grad_accum_steps),
                 "loss_tag": loss_tag,
                 "root_dir": args.root_dir,
                 "test_root_dir": args.test_root_dir,
@@ -1148,6 +1173,7 @@ def main():
             slope_robust=args.slope_robust,
             slope_charb_eps=args.slope_charb_eps,
             slope_huber_delta=args.slope_huber_delta,
+            grad_accum_steps=args.grad_accum_steps,
         )
 
         va_mse_norm, va_mse_phys, va_rmse_phys, va_mae_phys = evaluate_ddp(
