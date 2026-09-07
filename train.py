@@ -37,6 +37,7 @@ from emulator.common import (
     infer_dataset_tag,
     infer_stats_threads,
     is_main_process,
+    parse_bool_int,
     print0,
     set_seed,
     temp_numpy_threads,
@@ -83,14 +84,6 @@ warnings.filterwarnings(
 def main():
     parser = argparse.ArgumentParser()
 
-    def _bool_int(value):
-        v = str(value).strip().lower()
-        if v in ("1", "true", "yes", "y", "on"):
-            return 1
-        if v in ("0", "false", "no", "n", "off"):
-            return 0
-        raise argparse.ArgumentTypeError("expected one of: 0/1, true/false, yes/no, on/off")
-
     # -------------------------
     # Data roots
     # -------------------------
@@ -103,6 +96,14 @@ def main():
 
     # Station JSON directory
     parser.add_argument("--station_json_dir", type=str, default="./station_json")
+    parser.add_argument(
+        "--use_site_elevation", type=parse_bool_int, choices=[0, 1], default=1,
+        help="Include site elevation (elevation_m / 10) in PACT station features.",
+    )
+    parser.add_argument(
+        "--use_bathymetry", type=parse_bool_int, choices=[0, 1], default=0,
+        help="Include bathymetry_m / 10 in PACT station features; requires that JSON field.",
+    )
 
     # Split args
     parser.add_argument("--train_ratio", type=float, default=0.6)
@@ -111,7 +112,7 @@ def main():
         "--shuffle_years",
         "--shuffle_split_years",
         dest="shuffle_years",
-        type=_bool_int,
+        type=parse_bool_int,
         default=0,
         choices=[0, 1],
         help="If 1, shuffle year groups with --seed before train/val/test ratio split.",
@@ -120,7 +121,7 @@ def main():
         "--future_only",
         "--future_only_years",
         dest="future_only",
-        type=_bool_int,
+        type=parse_bool_int,
         default=0,
         choices=[0, 1],
         help="If 1, keep only year tags with any year component > --future_year_threshold before ratio split.",
@@ -915,9 +916,14 @@ def main():
             print0(f"Warning: station JSON not found for '{station_key}' under {args.station_json_dir}. "
                    f"Model3 will rely on learned station token only.")
         else:
-            sf = station_features_from_json(station_json)
+            sf = station_features_from_json(
+                station_json,
+                use_site_elevation=bool(args.use_site_elevation),
+                use_bathymetry=bool(args.use_bathymetry),
+            )
             station_feat = sf.to(device=device, dtype=torch.float32)
-            print0(f"[Station JSON] loaded '{station_key}' -> station_feat_dim={station_feat.numel()}")
+            print0(f"[Station JSON] loaded '{station_key}' -> station_feat_dim={station_feat.numel()} "
+                   f"use_site_elevation={bool(args.use_site_elevation)} use_bathymetry={bool(args.use_bathymetry)}")
             if station_feat is not None:
                 print0(f"station_feat={station_feat.detach().cpu().numpy().round(6).tolist()}")
 
@@ -1188,6 +1194,9 @@ def main():
                 "cnn_intermediate_channel": args.cnn_intermediate_channel if args.encoder_type == "CNN" else None,
                 "time_encoding": "relative_lag" if model_name == "perceiver3" else None,
                 "zero_history_query_residual": model_name == "perceiver3" and history_steps == 0,
+                "use_site_elevation": bool(args.use_site_elevation),
+                "use_bathymetry": bool(args.use_bathymetry),
+                "station_feat_dim": int(station_feat.numel()) if model_name == "perceiver3" and station_feat is not None else 0,
                 "grad_accum_steps": int(args.grad_accum_steps),
                 "loss_tag": loss_tag,
                 "root_dir": args.root_dir,

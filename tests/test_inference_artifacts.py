@@ -61,6 +61,7 @@ class InferenceArtifactTests(unittest.TestCase):
                       MODEL_LABEL=self.label, BATCH_SIZE="7", DO_CONDA="0", TORCH_GPU_PROBE="0",
                       USE_AMP="0", USE_TF32="0", CKPT_PATH="./check points/*.pth",
                       CNN_INTERMEDIATE_CHANNEL="29",
+                      USE_SITE_ELEVATION="0", USE_BATHYMETRY="1",
                       INFERENCE_RESULTS_ROOT="./results with spaces")
         self.common.write_text("\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items()) + "\n")
         self.config = self.root / "leaf config.sh"
@@ -90,6 +91,8 @@ class InferenceArtifactTests(unittest.TestCase):
         self.assertEqual(original[original.index("--ckpt") + 1], str(self.selected.resolve()))
         self.assertEqual(original[original.index("--model_label") + 1], self.label)
         self.assertEqual(original[original.index("--cnn_intermediate_channel") + 1], "29")
+        self.assertEqual(original[original.index("--use_site_elevation") + 1], "0")
+        self.assertEqual(original[original.index("--use_bathymetry") + 1], "1")
         self.assertNotIn("--time_encoding", original)
 
     def test_tmux_uses_snapshot_even_after_sources_and_glob_change(self):
@@ -163,11 +166,13 @@ class InferenceArtifactTests(unittest.TestCase):
         record = next((self.root / "train results").glob("*/train_invocation.json"))
         args = json.loads(record.read_text())
         self.assertEqual(args[args.index("--cnn_intermediate_channel") + 1], "29")
+        self.assertEqual(args[args.index("--use_site_elevation") + 1], "0")
+        self.assertEqual(args[args.index("--use_bathymetry") + 1], "1")
         self.assertNotIn("--time_encoding", args)
         self.assertEqual(args[args.index("--history_hours") + 1], "0")
-        values = self.run_bash("-c", 'source "$1"; printf "%s\\n" "$CNN_INTERMEDIATE_CHANNEL"',
+        values = self.run_bash("-c", 'source "$1"; printf "%s\\n" "$CNN_INTERMEDIATE_CHANNEL" "$USE_SITE_ELEVATION" "$USE_BATHYMETRY"',
                                "snapshot", record.parent / "config_used.sh").stdout.splitlines()
-        self.assertEqual(values, ["29"])
+        self.assertEqual(values, ["29", "0", "1"])
 
 
 if __name__ == "__main__":

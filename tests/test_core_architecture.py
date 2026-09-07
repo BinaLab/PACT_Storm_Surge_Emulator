@@ -149,7 +149,8 @@ class CoreArchitectureTests(unittest.TestCase):
                                           num_layers=2, node_read_heads=2, time_read_heads=2,
                                           transformer_layers=2, max_time_steps=9, encoder_type=encoder,
                                           temporal_block=temporal, head_type="single",
-                                          cnn_intermediate_channel=32),
+                                          cnn_intermediate_channel=32,
+                                          use_site_elevation=1, use_bathymetry=0),
                                 model_state_dict=model.state_dict(), x_center=torch.zeros(5),
                                 x_scale=torch.ones(5), x_clip=0,
                                 y_mean=torch.zeros(6), y_std=torch.ones(6), time_encoding="relative_lag")
@@ -199,16 +200,19 @@ class CoreArchitectureTests(unittest.TestCase):
             graphs, stations = root / "graphs", root / "stations"
             graphs.mkdir()
             stations.mkdir()
-            (stations / "Battery.json").write_text(json.dumps(dict(lat=40, lon=-74)))
+            (stations / "Battery.json").write_text(json.dumps(dict(
+                lat=40, lon=-74, elevation_m=2, bathymetry_m=9,
+            )))
             for year in range(2000, 2005):
                 items = self.make_batch(9).to_data_list()
                 for graph in items:
                     graph.x_hist = graph.x_hist.permute(1, 0, 2).contiguous()
                     graph.y += (year - 2000) * 0.2
                 torch.save(items, graphs / f"{year}_{year+1}_Battery_fixture_graphs.pt")
-            for history in (0, 12):
+            for history, use_elevation, use_bathymetry in itertools.product((0, 12), (False, True), (False, True)):
                 width = 29 if history == 0 else 32
-                out = root / f"training_{history}"
+                tag = f"{history}_elev{int(use_elevation)}_bathy{int(use_bathymetry)}"
+                out = root / f"training_{tag}"
                 argv = ["train.py", "--root_dir", str(graphs), "--station", "Battery",
                         "--station_json_dir", str(stations), "--output_dir", str(out),
                         "--model", "perceiver3", "--encoder_type", "CNN", "--temporal_block", "MLP",
@@ -218,18 +222,26 @@ class CoreArchitectureTests(unittest.TestCase):
                         "--loss_mode", "mse", "--x_norm", "zscore", "--x_aug", "0", "--x_clip", "0"]
                 if history:
                     argv += ["--cnn_intermediate_channel", str(width)]
+                if (use_elevation, use_bathymetry) != (True, False):
+                    argv += ["--use_site_elevation", str(use_elevation), "--use_bathymetry", str(use_bathymetry)]
                 with patch.object(sys, "argv", argv), patch.object(torch.cuda, "is_available", return_value=False), contextlib.redirect_stdout(io.StringIO()):
                     train.main()
                 checkpoint = next(out.glob("best*.pth"))
                 saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
                 self.assertEqual(saved["args"]["cnn_intermediate_channel"], width)
+                self.assertEqual(saved["args"]["use_site_elevation"], int(use_elevation))
+                self.assertEqual(saved["args"]["use_bathymetry"], int(use_bathymetry))
+                feature_dim = 6 + int(use_elevation) + int(use_bathymetry)
+                self.assertEqual(saved["model_state_dict"]["station_meta_encoder.net.0.weight"].shape[1], feature_dim)
                 self.assertEqual(saved["time_encoding"], "relative_lag")
                 self.assertIn("lag_embed.weight", saved["model_state_dict"])
                 self.assertEqual(saved["model_state_dict"]["cnn_encoder.layers.0.weight"].shape, (width, 5, 3, 3))
                 snapshot = (out / "config_used.sh").read_text()
                 self.assertIn(f"CNN_INTERMEDIATE_CHANNEL={width}", snapshot)
+                self.assertIn(f"USE_SITE_ELEVATION={int(use_elevation)}", snapshot)
+                self.assertIn(f"USE_BATHYMETRY={int(use_bathymetry)}", snapshot)
                 self.assertNotIn("TIME_ENCODING=", snapshot)
-                output = root / f"inference_{history}"
+                output = root / f"inference_{tag}"
                 argv = ["infer.py", "--ckpt", str(checkpoint), "--root_dir", str(graphs),
                         "--station_json_dir", str(stations), "--out_dir", str(output), "--save_npz", "--num_workers", "0"]
                 with patch.object(sys, "argv", argv), patch.object(torch.cuda, "is_available", return_value=False), contextlib.redirect_stdout(io.StringIO()):
@@ -238,10 +250,21 @@ class CoreArchitectureTests(unittest.TestCase):
                 self.assertEqual(metadata["time_encoding"], "relative_lag")
                 self.assertEqual(metadata["cnn_intermediate_channel"], width)
                 self.assertEqual(metadata["zero_history_query_residual"], history == 0)
+                self.assertEqual(metadata["use_site_elevation"], use_elevation)
+                self.assertEqual(metadata["use_bathymetry"], use_bathymetry)
+                self.assertEqual(metadata["station_feat_dim"], feature_dim)
                 self.assertTrue(np.isfinite(metadata["results"]["_overall"]["rmse"]))
                 with np.load(next(out.glob("test_preds*.npz")), allow_pickle=True) as trained, np.load(next(output.glob("preds*.npz")), allow_pickle=True) as inferred:
                     np.testing.assert_array_equal(trained["tags"], inferred["tags"])
                     np.testing.assert_allclose(trained["y_pred"], inferred["y_pred"], rtol=1e-5, atol=1e-6)
+                if history == 0 and use_elevation and not use_bathymetry:
+                    # Elevation-only and bathymetry-only both have seven features.
+                    # Their semantics must be checked even though weight shapes fit.
+                    options = ["--use_site_elevation", "False", "--use_bathymetry", "True"]
+                    with patch.object(sys, "argv", [*argv, *options]), self.assertRaisesRegex(ValueError, "use_site_elevation override"):
+                        infer.main()
+                    with patch.object(sys, "argv", [*argv, "--use_bathymetry", "True"]), self.assertRaisesRegex(ValueError, "use_bathymetry override"):
+                        infer.main()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,30 @@
 # Architecture changelog
 
+## 2026-09-07 — Station elevation and bathymetry controls
+
+Baseline: commit `c059f23`. Station JSON files now include the supplied node bathymetry in meters, with the node ID, longitude, and latitude stored under `bathymetry_node`:
+
+| Station | Node ID | Bathymetry (m) |
+| --- | ---: | ---: |
+| Battery | 27142 | 8.9508867264 |
+| Boston | 74215 | 10.1543668658 |
+| Lewes | 79792 | 2.0000000000 |
+| CBBT | 87253 | 9.6839561462 |
+
+The supplied node coordinates are retained as depth-location metadata. Geographic station features continue to use the existing station latitude/longitude. Site elevation remains the separate `elevation_m` field derived from the station's meteorological-site elevation.
+
+`USE_SITE_ELEVATION` (`--use_site_elevation`) and `USE_BATHYMETRY` (`--use_bathymetry`) independently select the two scalar features for PACT. All existing training and inference configs use **site elevation on, bathymetry off**. Both fields are scaled by 10 meters when selected. Bathymetry is appended after the existing geographic sin/cos features, and disabled fields are omitted. The feature dimension is `6 + use_site_elevation + use_bathymetry`: 7 by default, 6 with neither, 7 with bathymetry alone, and 8 with both. The station encoder input width adjusts accordingly; enabling an additional feature adds a column to its first linear layer.
+
+The default vector retains the original seven values and ordering. Bathymetry remains excluded from the core study unless explicitly enabled for a separate experiment. Selecting bathymetry requires a finite `bathymetry_m` value in the loaded station JSON. The separate baseline family does not consume station metadata.
+
+Checkpoints and resolved config snapshots record both switches. Direct inference reads the checkpoint's feature selection; explicit inference values must match. This check distinguishes elevation-only from bathymetry-only inputs even though both have seven dimensions. Checkpoints missing either setting require retraining rather than guessing the feature schema. Training/inference metadata record the flags and feature dimension.
+
+Suggested methods wording:
+
+> Station metadata include latitude, longitude, their sine/cosine encodings, and optionally site elevation and local node bathymetry. Both scalar height/depth features are divided by 10 meters. The core architecture study includes site elevation and excludes bathymetry; the feature selection is fixed across all compared configurations.
+
+Validation: all 26 CPU regression tests passed, including the four feature combinations through training -> checkpoint -> inference at 0h and 12h, mismatched inference settings, missing/invalid bathymetry, and launcher snapshots. All 127 shipped shell configs resolve to elevation on and bathymetry off. For all four station JSON files, the default feature tensors are bitwise identical to the baseline implementation.
+
 ## 2026-09-07 — Preparation for the core architecture study
 
 Baseline: commit `a8cd656`. These changes apply to new training runs. Existing graph data, target timestamps, station features, and saved experimental results are unchanged. The two history-related changes below are separate design decisions; the CNN width adjustment is recorded afterward. All experiments will be retrained, so the final implementation intentionally removes the old encoding and implicit-width compatibility paths initially included in `45d9529`.

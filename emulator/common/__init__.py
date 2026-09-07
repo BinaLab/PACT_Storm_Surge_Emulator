@@ -1,5 +1,6 @@
 """Common utilities shared by training and inference entrypoints."""
 
+from .cli import parse_bool_int
 from .distributed import (
     ddp_all_reduce_sum,
     ddp_is_initialized,
@@ -12,6 +13,7 @@ from .io_utils import write_json_atomic
 from .runtime import infer_dataset_tag, infer_stats_threads, set_seed, temp_numpy_threads
 
 __all__ = [
+    "parse_bool_int",
     "ddp_all_reduce_sum",
     "ddp_is_initialized",
     "get_rank",

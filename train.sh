@@ -52,6 +52,8 @@ set -u
 : "${TEMPORAL_BLOCK:=Transformer}"
 : "${HEAD_TYPE:=dual}"
 : "${STATION_JSON_DIR:=./station_json}"
+: "${USE_SITE_ELEVATION:=1}"
+: "${USE_BATHYMETRY:=0}"
 
 : "${BATCH_SIZE:=256}"
 : "${GRAD_ACCUM_STEPS:=1}"
@@ -322,7 +324,8 @@ write_resolved_config() {
   local config_vars=(
     TRAIN_PY num_gpus ROOT_DIR TEST_ROOT_DIR STATION MODEL ENCODER_TYPE
     CNN_INTERMEDIATE_CHANNEL
-    TEMPORAL_BLOCK HEAD_TYPE STATION_JSON_DIR BATCH_SIZE GRAD_ACCUM_STEPS
+    TEMPORAL_BLOCK HEAD_TYPE STATION_JSON_DIR USE_SITE_ELEVATION USE_BATHYMETRY
+    BATCH_SIZE GRAD_ACCUM_STEPS
     EPOCHS HIDDEN_CHANNELS NUM_LAYERS DROPOUT HEAD_DROPOUT SEED TRAIN_RATIO
     VAL_RATIO SHUFFLE_YEARS FUTURE_ONLY FUTURE_YEAR_THRESHOLD LR_LIST
     HISTORY_HOURS_LIST LOSS_MODE_LIST TAIL_FRAC TAIL_LAMBDA_LIST WMSE_Q_LIST
@@ -370,6 +373,7 @@ echo "Encoder:       ${ENCODER_TYPE}"
 echo "CNN width:     ${CNN_INTERMEDIATE_CHANNEL} (intermediate channels)"
 echo "Temporal:      ${TEMPORAL_BLOCK}"
 echo "Head:          ${HEAD_TYPE}"
+echo "Station feats: site_elevation=${USE_SITE_ELEVATION} bathymetry=${USE_BATHYMETRY} (PACT)"
 if (( GRAD_ACCUM_STEPS > 1 )); then
   echo "Grad accum:    ${GRAD_ACCUM_STEPS} (nominal effective batch=$((BATCH_SIZE * GRAD_ACCUM_STEPS)))"
 fi
@@ -569,6 +573,8 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
                 --x_aug_scale "${X_AUG_SCALE}"
                 --x_aug_bias "${X_AUG_BIAS}"
                 --station_json_dir "${STATION_JSON_DIR}"
+                --use_site_elevation "${USE_SITE_ELEVATION}"
+                --use_bathymetry "${USE_BATHYMETRY}"
               )
 
               [[ -n "${STATION}" ]]       && BASE_CMD+=(--station "${STATION}")

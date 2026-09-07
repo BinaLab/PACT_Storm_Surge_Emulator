@@ -82,5 +82,11 @@
   "lat": 38.7833333333,
   "lon": -75.12,
   "elevation_ft_msl": 8.5,
-  "elevation_m": 2.5908
+  "elevation_m": 2.5908,
+  "bathymetry_m": 2.0000000000,
+  "bathymetry_node": {
+    "node_id": 79792,
+    "longitude": -75.1195602417,
+    "latitude": 38.7842369080
+  }
 }

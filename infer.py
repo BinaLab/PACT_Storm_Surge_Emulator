@@ -19,7 +19,7 @@ from datetime import datetime
 import numpy as np
 import torch
 
-from emulator.common import infer_dataset_tag
+from emulator.common import infer_dataset_tag, parse_bool_int
 from emulator.data import (
     ForcingGraphStore,
     ForcingGraphView,
@@ -63,6 +63,14 @@ def main():
     # station
     parser.add_argument("--station", type=str, default=None)
     parser.add_argument("--station_json_dir", type=str, default="./station_json")
+    parser.add_argument(
+        "--use_site_elevation", type=parse_bool_int, choices=[0, 1], default=None,
+        help="Expected PACT site-elevation setting. Omit to read the checkpoint.",
+    )
+    parser.add_argument(
+        "--use_bathymetry", type=parse_bool_int, choices=[0, 1], default=None,
+        help="Expected PACT bathymetry setting. Omit to read the checkpoint.",
+    )
     parser.add_argument(
         "--strict_station_test",
         action="store_true",
@@ -229,6 +237,19 @@ def main():
                 "CNN intermediate channel override does not match the checkpoint: "
                 f"checkpoint={cnn_intermediate_channel}, requested={args.cnn_intermediate_channel}."
             )
+    station_feature_options = {}
+    for name in ("use_site_elevation", "use_bathymetry"):
+        if name not in ckpt_args:
+            raise ValueError(f"Checkpoint is missing {name}; retrain with explicit station-feature settings.")
+        saved = bool(parse_bool_int(ckpt_args[name]))
+        requested = getattr(args, name)
+        if requested is not None and bool(requested) != saved:
+            raise ValueError(
+                f"{name} override does not match the checkpoint: "
+                f"checkpoint={saved}, requested={bool(requested)}."
+            )
+        station_feature_options[name] = saved
+
     if args.history_hours < -1:
         raise ValueError("--history_hours must be -1 (checkpoint) or a nonnegative multiple of 6.")
     history_hours = args.history_hours if args.history_hours >= 0 else int(ckpt_args.get("history_hours", 0))
@@ -342,8 +363,10 @@ def main():
         if st_json is None:
             print(f"[WARN] station JSON not found for '{station_key}'. Using learned station token only.", flush=True)
         else:
-            station_feat = station_features_from_json(st_json).to(device=device, dtype=torch.float32)
-            print(f"[Station JSON] loaded '{station_key}' -> feat_dim={station_feat.numel()}", flush=True)
+            station_feat = station_features_from_json(st_json, **station_feature_options).to(device=device, dtype=torch.float32)
+            print(f"[Station JSON] loaded '{station_key}' -> feat_dim={station_feat.numel()} "
+                  f"use_site_elevation={station_feature_options['use_site_elevation']} "
+                  f"use_bathymetry={station_feature_options['use_bathymetry']}", flush=True)
 
     # Build only the store used by this inference mode. Filtering filenames
     # before torch.load avoids materializing unrelated stations in CPU RAM.
@@ -636,6 +659,8 @@ def main():
         cnn_intermediate_channel=cnn_intermediate_channel if encoder_type == "CNN" else None,
         time_encoding="relative_lag" if model_name == "perceiver3" else None,
         zero_history_query_residual=model_name == "perceiver3" and history_steps == 0,
+        **station_feature_options,
+        station_feat_dim=int(station_feat.numel()) if station_feat is not None else 0,
         history_hours=int(history_hours),
         ckpt=args.ckpt,
         root_dir=args.root_dir,

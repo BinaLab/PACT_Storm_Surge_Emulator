@@ -42,7 +42,8 @@ class InferenceAuditTests(unittest.TestCase):
         self.ckpt = dict(
             model_state_dict=model.state_dict(),
             args=dict(model="baseline", history_hours=0, hidden_channels=8,
-                      station="Battery", train_ratio=0.5, val_ratio=0.25, seed=7),
+                      station="Battery", train_ratio=0.5, val_ratio=0.25, seed=7,
+                      use_site_elevation=1, use_bathymetry=0),
             x_center=torch.zeros(5), x_scale=torch.ones(5),
             y_mean=torch.zeros(2), y_std=torch.ones(2),
         )

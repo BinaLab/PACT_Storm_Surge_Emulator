@@ -133,6 +133,23 @@ Training and evaluation expect graph roots containing `*graphs.pt` files. Graph 
 
 Each graph file contains a list of PyG `Data` objects and is named `<year0>_<year1>_<station>_<version>_graphs.pt`. Station filtering matches the filename's station field, including case. Inference warns and falls back to all stations if the requested station is absent; direct external evaluation can use `--strict_station_test` to reject that case. PACT also reads optional station metadata from `station_json/<station>.json`.
 
+### Station metadata
+
+All shipped training and inference configs use `USE_SITE_ELEVATION=1` (true) and `USE_BATHYMETRY=0` (false). These independent switches select PACT station features; the separate baseline family does not consume station metadata. Python CLI equivalents are `--use_site_elevation` and `--use_bathymetry`, accepting `0`/`1` or `False`/`True`.
+
+Latitude/longitude and their four sin/cos features are always included. Site elevation uses `elevation_m / 10`, and optional bathymetry uses `bathymetry_m / 10`. The vector order is `[lat/90, lon/180, (elevation/10), sin(lat), cos(lat), sin(lon), cos(lon), (bathymetry/10)]`, with angles converted to radians for sin/cos and disabled fields omitted. The station encoder input dimension follows the selected fields:
+
+| Site elevation | Bathymetry | Feature dimension |
+| --- | --- | ---: |
+| On (default) | Off (default) | 7 |
+| Off | Off | 6 |
+| Off | On | 7 |
+| On | On | 8 |
+
+Each station JSON stores `bathymetry_m` and its node ID/coordinates under `bathymetry_node`. Node coordinates describe the depth measurement location; the existing station coordinates remain the model's geographic inputs. Enabling bathymetry requires a finite `bathymetry_m` value. The existing seven-feature vector is preserved exactly by the default settings.
+
+Both switches are saved in checkpoint arguments and config snapshots. Direct inference reads checkpoint settings when the CLI flags are omitted; inference launchers pass the configured values and reject mismatches, including a swap between elevation-only and bathymetry-only features despite their equal dimensions. New checkpoints must record both flags. Training and inference metadata report the selected flags and actual station-feature dimension.
+
 ### Time windows and preprocessing
 
 NCEP forcing is sampled every 6 hours. CMIP6 preprocessing selects every other 3-hour record to produce the same 6-hour cadence. For a forcing cutoff `t`, each graph targets six hourly surge values **`t, t+1h, ..., t+5h`**. The next graph covers `t+6h` through `t+11h`, so the outputs concatenate without overlap. For example, forcing through 00:00 produces surge for 00:00–05:00; forcing through 06:00 produces 06:00–11:00.
@@ -380,6 +397,8 @@ CKPT_PATH="./Inference_Checkpoints/NCEP_Battery_P3_Best.pth"
 BATCH_SIZE=1
 YEARS=""
 STATION_JSON_DIR="./station_json"
+USE_SITE_ELEVATION=1
+USE_BATHYMETRY=0
 INFERENCE_RESULTS_ROOT="./All_Inference_Results"
 ```
 
@@ -392,6 +411,7 @@ Field notes:
 - `INFERENCE_RESULTS_ROOT`: common parent directory for every `infer.sh` and `infer_multi.sh` run.
 - `ENCODER_TYPE`: either `GraphSAGE` (the backward-compatible default) or `CNN`.
 - `CNN_INTERMEDIATE_CHANNEL`: CNN intermediate width, default 29 for training. Inference requires the saved checkpoint setting, with no fallback to `hidden_channels`. The inference config field defaults to empty; set it only to assert an expected width.
+- `USE_SITE_ELEVATION`, `USE_BATHYMETRY`: independently include site elevation and node depth in PACT station features. All shipped configs use `1` and `0`, respectively; inference values must match the checkpoint.
 - `TEMPORAL_BLOCK`: PACT middle block: `Transformer` (backward-compatible default), `MLP`, `LSTM`, or `GRU`.
 - `HEAD_TYPE`: PACT prediction head: `dual` (backward-compatible gated tail head) or `single` (base MLP only).
 - `HISTORY_HOURS`: inference history window; use `HISTORY_HOURS_LIST=(12)` for a training config. Choose a nonnegative multiple of 6 within the stored history (currently at most 48h). PACT supports 0h as the instantaneous-forcing control; the spatial baseline also supports 0h. For inference, match the checkpoint's training window.
