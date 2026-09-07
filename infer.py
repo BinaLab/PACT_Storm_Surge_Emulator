@@ -101,6 +101,14 @@ def main():
             "default to dual."
         ),
     )
+    parser.add_argument(
+        "--cnn_intermediate_channel", type=int, default=None,
+        help="Expected CNN intermediate width. Omit to read checkpoint; legacy uses hidden_channels.",
+    )
+    parser.add_argument(
+        "--time_encoding", default=None, choices=["relative_lag", "sequence_position"],
+        help="Expected PACT time encoding. Omit to read checkpoint; legacy uses sequence_position.",
+    )
     parser.add_argument("--history_hours", type=int, default=-1, help="Override history_hours; -1 uses ckpt args")
     parser.add_argument("--tf32", action="store_true")
     parser.add_argument("--torch_threads", type=int, default=1)
@@ -213,9 +221,29 @@ def main():
             f"checkpoint={checkpoint_head_type!r}, requested={args.head_type!r}. "
             "Use a checkpoint trained with the requested prediction head."
         )
+    cnn_intermediate_channel = int(ckpt_args.get("cnn_intermediate_channel", ckpt_args.get("hidden_channels", 64)))
+    time_encoding = str(ckpt_args.get("time_encoding", "sequence_position"))
+    if encoder_type == "CNN":
+        if cnn_intermediate_channel < 1 or num_layers < 1:
+            raise ValueError("CNN checkpoint requires positive intermediate width and layer count.")
+        if args.cnn_intermediate_channel is not None and args.cnn_intermediate_channel != cnn_intermediate_channel:
+            raise ValueError(
+                "CNN intermediate channel override does not match the checkpoint: "
+                f"checkpoint={cnn_intermediate_channel}, requested={args.cnn_intermediate_channel}."
+            )
+    if model_name == "perceiver3":
+        if time_encoding not in ("relative_lag", "sequence_position"):
+            raise ValueError(f"Unknown checkpoint time_encoding: {time_encoding!r}.")
+        if args.time_encoding is not None and args.time_encoding != time_encoding:
+            raise ValueError(
+                "Time encoding override does not match the checkpoint: "
+                f"checkpoint={time_encoding!r}, requested={args.time_encoding!r}."
+            )
+    if args.history_hours < -1:
+        raise ValueError("--history_hours must be -1 (checkpoint) or a nonnegative multiple of 6.")
     history_hours = args.history_hours if args.history_hours >= 0 else int(ckpt_args.get("history_hours", 0))
-    if history_hours % 6 != 0:
-        raise ValueError(f"history_hours must be multiple of 6, got {history_hours}")
+    if history_hours < 0 or history_hours % 6 != 0:
+        raise ValueError(f"history_hours must be a nonnegative multiple of 6, got {history_hours}")
     history_steps = history_hours // 6
 
     # station: prefer CLI; else fallback to ckpt args if present
@@ -272,6 +300,10 @@ def main():
     print(f"[infer] encoder_type={encoder_type}", flush=True)
     print(f"[infer] temporal_block={temporal_block}", flush=True)
     print(f"[infer] head_type={head_type}", flush=True)
+    if encoder_type == "CNN":
+        print(f"[infer] cnn_intermediate_channel={cnn_intermediate_channel}", flush=True)
+    if model_name == "perceiver3":
+        print(f"[infer] time_encoding={time_encoding} instantaneous_control={history_steps == 0}", flush=True)
     print(f"[infer] history_hours={history_hours} (steps={history_steps})", flush=True)
     print(f"[infer] station={station_key or 'ALL'}", flush=True)
     print(f"[infer] model_label={model_label}", flush=True)
@@ -412,6 +444,7 @@ def main():
                 use_pmean=use_pmean,
                 pmean_dim=pmean_dim,
                 encoder_type=encoder_type,
+                cnn_intermediate_channel=cnn_intermediate_channel,
             )
         else:
             W = history_steps + 1
@@ -425,10 +458,9 @@ def main():
                 pmean_T=W,
                 pmean_dim=pmean_dim,
                 encoder_type=encoder_type,
+                cnn_intermediate_channel=cnn_intermediate_channel,
             )
     elif model_name == "perceiver3":
-        if history_steps == 0:
-            raise ValueError("perceiver3 requires history>0")
         station_feat_dim = int(station_feat.numel()) if station_feat is not None else 0
 
         use_tokens = bool(use_pmean) and (perceiver_pmean_mode in ("tokens", "both"))
@@ -459,6 +491,8 @@ def main():
             encoder_type=encoder_type,
             temporal_block=temporal_block,
             head_type=head_type,
+            cnn_intermediate_channel=cnn_intermediate_channel,
+            time_encoding=time_encoding,
         )
     else:
         raise ValueError(
@@ -610,6 +644,9 @@ def main():
         encoder_type=encoder_type,
         temporal_block=temporal_block,
         head_type=head_type,
+        cnn_intermediate_channel=cnn_intermediate_channel if encoder_type == "CNN" else None,
+        time_encoding=time_encoding if model_name == "perceiver3" else None,
+        zero_history_query_residual=model_name == "perceiver3" and history_steps == 0,
         history_hours=int(history_hours),
         ckpt=args.ckpt,
         root_dir=args.root_dir,

@@ -60,6 +60,7 @@ class InferenceArtifactTests(unittest.TestCase):
                       TEST_ROOT_DIR="./target data/graphs", STATION="Battery", MODEL="baseline",
                       MODEL_LABEL=self.label, BATCH_SIZE="7", DO_CONDA="0", TORCH_GPU_PROBE="0",
                       USE_AMP="0", USE_TF32="0", CKPT_PATH="./check points/*.pth",
+                      CNN_INTERMEDIATE_CHANNEL="29", TIME_ENCODING="relative_lag",
                       INFERENCE_RESULTS_ROOT="./results with spaces")
         self.common.write_text("\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items()) + "\n")
         self.config = self.root / "leaf config.sh"
@@ -88,6 +89,8 @@ class InferenceArtifactTests(unittest.TestCase):
         self.assertEqual(original[original.index("--batch_size") + 1], "11")
         self.assertEqual(original[original.index("--ckpt") + 1], str(self.selected.resolve()))
         self.assertEqual(original[original.index("--model_label") + 1], self.label)
+        self.assertEqual(original[original.index("--cnn_intermediate_channel") + 1], "29")
+        self.assertEqual(original[original.index("--time_encoding") + 1], "relative_lag")
 
     def test_tmux_uses_snapshot_even_after_sources_and_glob_change(self):
         self.run_bash(PROJECT / "infer.sh", self.config)
@@ -125,6 +128,44 @@ class InferenceArtifactTests(unittest.TestCase):
             self.assertEqual(values[5].split("|", 1)[1], values[4])
             self.assert_command_replays(snapshot.parent)
         self.assertEqual(targets, {"", str(self.root / "target data/graphs")})
+
+    def test_empty_architecture_expectations_are_not_passed_to_inference(self):
+        with self.config.open("a") as config:
+            config.write("CNN_INTERMEDIATE_CHANNEL=''\nTIME_ENCODING=''\n")
+        self.run_bash(PROJECT / "infer_multi.sh", self.config)
+        for record in (self.root / "results with spaces").glob("*/outputs/invocation.json"):
+            args = json.loads(record.read_text())
+            self.assertNotIn("--cnn_intermediate_channel", args)
+            self.assertNotIn("--time_encoding", args)
+
+    def test_training_launcher_saves_and_passes_architecture_settings(self):
+        fake_train = self.root / "record train.py"
+        fake_train.write_text(
+            "import json,sys\nfrom pathlib import Path\n"
+            "args=sys.argv[1:]\n"
+            "out=Path(args[args.index('--output_dir')+1])\n"
+            "(out/'train_invocation.json').write_text(json.dumps(args))\n"
+        )
+        with self.config.open("a") as config:
+            config.write(f"TRAIN_PY={shlex.quote(str(fake_train))}\n"
+                         "MODEL=perceiver3\nENCODER_TYPE=CNN\nnum_gpus=1\nUSE_TMUX=0\n"
+                         "HISTORY_HOURS_LIST=(0)\nALL_RESULTS_ROOT='./train results'\n")
+        env_before = self.env
+        self.env = self.env.copy()
+        for key in ("SLURM_NTASKS_PER_NODE", "SLURM_JOB_ID", "PACT_RUNSTAMP", "PACT_RUN_NAME"):
+            self.env.pop(key, None)
+        try:
+            self.run_bash(PROJECT / "train.sh", self.config)
+        finally:
+            self.env = env_before
+        record = next((self.root / "train results").glob("*/train_invocation.json"))
+        args = json.loads(record.read_text())
+        self.assertEqual(args[args.index("--cnn_intermediate_channel") + 1], "29")
+        self.assertEqual(args[args.index("--time_encoding") + 1], "relative_lag")
+        self.assertEqual(args[args.index("--history_hours") + 1], "0")
+        values = self.run_bash("-c", 'source "$1"; printf "%s\\n" "$CNN_INTERMEDIATE_CHANNEL" "$TIME_ENCODING"',
+                               "snapshot", record.parent / "config_used.sh").stdout.splitlines()
+        self.assertEqual(values, ["29", "relative_lag"])
 
 
 if __name__ == "__main__":

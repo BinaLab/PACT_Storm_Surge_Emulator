@@ -168,25 +168,30 @@ def _infer_grid_batch_shape(batch, total_nodes: int) -> tuple[int, int, int]:
 class GridCNNEncoder(nn.Module):
     """Same-resolution 2D CNN that returns one hidden token per grid node."""
 
-    def __init__(self, in_channels: int, hidden_channels: int, num_layers: int, dropout: float):
+    def __init__(self, in_channels: int, hidden_channels: int, num_layers: int, dropout: float,
+                 intermediate_channel: int = 29):
         super().__init__()
         depth = int(num_layers)
         if depth <= 0:
             raise ValueError(f"CNN encoder requires num_layers >= 1, got {depth}.")
+        self.intermediate_channel = int(intermediate_channel)
+        if self.intermediate_channel <= 0:
+            raise ValueError("CNN intermediate_channel must be >= 1.")
 
         layers = []
         current_channels = int(in_channels)
-        for _ in range(depth):
+        for layer_index in range(depth):
+            output_channels = int(hidden_channels) if layer_index == depth - 1 else self.intermediate_channel
             layers.append(
                 nn.Conv2d(
                     in_channels=current_channels,
-                    out_channels=int(hidden_channels),
+                    out_channels=output_channels,
                     kernel_size=3,
                     stride=1,
                     padding=1,
                 )
             )
-            current_channels = int(hidden_channels)
+            current_channels = output_channels
 
         self.layers = nn.ModuleList(layers)
         self.act = nn.LeakyReLU(0.1, inplace=True)
@@ -230,6 +235,7 @@ class SpatialOnlyGraphSAGEBatch(nn.Module):
         use_pmean: bool = False,
         pmean_dim: int = 32,
         encoder_type: str = "GraphSAGE",
+        cnn_intermediate_channel: int = 29,
     ):
         super().__init__()
         self.encoder_type = _canonical_encoder_type(encoder_type)
@@ -238,7 +244,9 @@ class SpatialOnlyGraphSAGEBatch(nn.Module):
             self.cnn_encoder = None
         else:
             self.convs = nn.ModuleList()
-            self.cnn_encoder = GridCNNEncoder(in_channels, hidden_channels, num_layers, dropout)
+            self.cnn_encoder = GridCNNEncoder(
+                in_channels, hidden_channels, num_layers, dropout, cnn_intermediate_channel
+            )
 
         self.act = nn.LeakyReLU(0.1, inplace=True)
         self.dropout = float(dropout)
@@ -319,6 +327,7 @@ class SpatioTemporalGraphSAGEBatch(nn.Module):
         pmean_T: int | None = None,
         pmean_dim: int = 32,
         encoder_type: str = "GraphSAGE",
+        cnn_intermediate_channel: int = 29,
     ):
         super().__init__()
         if temporal_hidden is None:
@@ -330,7 +339,9 @@ class SpatioTemporalGraphSAGEBatch(nn.Module):
             self.cnn_encoder = None
         else:
             self.convs = nn.ModuleList()
-            self.cnn_encoder = GridCNNEncoder(in_channels, hidden_channels, num_layers, dropout)
+            self.cnn_encoder = GridCNNEncoder(
+                in_channels, hidden_channels, num_layers, dropout, cnn_intermediate_channel
+            )
 
         self.act = nn.LeakyReLU(0.1, inplace=True)
         self.dropout = float(dropout)
@@ -494,6 +505,8 @@ class PACT(nn.Module):
         encoder_type: str = "GraphSAGE",
         temporal_block: str = "Transformer",
         head_type: str = "dual",
+        cnn_intermediate_channel: int = 29,
+        time_encoding: str = "relative_lag",
     ):
         super().__init__()
         self.in_channels = int(in_channels)
@@ -507,7 +520,9 @@ class PACT(nn.Module):
             self.cnn_encoder = None
         else:
             self.convs = nn.ModuleList()
-            self.cnn_encoder = GridCNNEncoder(self.in_channels, hidden_channels, num_layers, dropout)
+            self.cnn_encoder = GridCNNEncoder(
+                self.in_channels, hidden_channels, num_layers, dropout, cnn_intermediate_channel
+            )
         self.act = nn.LeakyReLU(0.1, inplace=True)
 
         self.station_token = nn.Parameter(torch.zeros(1, hidden_channels))
@@ -524,6 +539,11 @@ class PACT(nn.Module):
             batch_first=True,
         )
 
+        if time_encoding not in ("relative_lag", "sequence_position"):
+            raise ValueError(f"Unknown time_encoding: {time_encoding!r}.")
+        self.time_encoding = time_encoding
+        # Retain the state-dict key for old checkpoints. New models index this
+        # learned table by lag: 0=current forcing, 1=six hours before, etc.
         self.time_embed = nn.Embedding(int(max_time_steps), hidden_channels)
 
         self.temporal_block = canonical_temporal_block(temporal_block)
@@ -732,8 +752,12 @@ class PACT(nn.Module):
             # with a recurrent block, consider time-wise fusion/interleaving.
             z_seq = torch.cat([z_seq, p_tokens], dim=1)
 
-        time_ids = torch.arange(steps, device=z_seq.device)
-        time_emb = self.time_embed(time_ids).unsqueeze(0)
+        if self.time_encoding == "relative_lag":
+            lag_ids = torch.arange(steps - 1, -1, -1, device=z_seq.device)
+            time_emb = self.time_embed(lag_ids).unsqueeze(0)
+        else:
+            position_ids = torch.arange(steps, device=z_seq.device)
+            time_emb = self.time_embed(position_ids).unsqueeze(0)
         if z_seq.size(1) == steps:
             z_seq = z_seq + time_emb
         else:
@@ -760,6 +784,12 @@ class PACT(nn.Module):
         else:
             context, _ = self.forecast_attn(horizon_query, memory, memory, need_weights=False)
             attn_time = None
+
+        # The instantaneous-forcing control has one forcing timestep. With a
+        # single memory token, attention alone loses horizon identity. Keep
+        # the query only in this control; the T>=2 decoder is unchanged.
+        if steps == 1:
+            context = context + horizon_query
 
         p_global = None
         if self.pmean_global_enc is not None:

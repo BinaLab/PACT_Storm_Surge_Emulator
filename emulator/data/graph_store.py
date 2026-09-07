@@ -319,6 +319,9 @@ class ForcingGraphView(Dataset):
         if hasattr(g, "x_hist"):
             x_hist = g.x_hist[-window:]  # (W, N, F)
             data.x_hist = x_hist.permute(1, 0, 2)  # (N, W, F)
+        elif self.history_steps == 0:
+            # PACT's 0h control also accepts graphs containing current forcing only.
+            data.x_hist = data.x.unsqueeze(1)
 
         # Pressure metadata also belongs to spatial-only graphs without x_hist.
         if hasattr(g, "p_mean_hist"):

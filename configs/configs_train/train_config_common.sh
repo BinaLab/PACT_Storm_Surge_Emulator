@@ -4,6 +4,8 @@ TRAIN_PY="train.py"
 num_gpus=4
 TEST_ROOT_DIR=""
 ENCODER_TYPE="GraphSAGE"
+CNN_INTERMEDIATE_CHANNEL=29
+TIME_ENCODING="relative_lag"
 TEMPORAL_BLOCK="Transformer"
 HEAD_TYPE="dual"
 

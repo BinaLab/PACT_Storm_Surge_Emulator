@@ -105,7 +105,7 @@ class MissingPressureTests(unittest.TestCase):
             store = SimpleNamespace(graphs=[graph], graph_tags=["2000_2001_Battery_0"])
             data = ForcingGraphView(store, [0], history_steps=0)[0]
             torch.testing.assert_close(data.p_mean_curr, torch.tensor([1000.0]))
-            self.assertFalse(hasattr(data, "x_hist"))
+            torch.testing.assert_close(data.x_hist, graph.x.unsqueeze(1))
         del graph.p_mean_curr
         graph.p_mean_hist = torch.tensor([998.0, 999.0, 1000.0])
         data = ForcingGraphView(store, [0], history_steps=0)[0]

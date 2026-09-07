@@ -277,6 +277,11 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--cnn_intermediate_channel", type=int, default=29,
+        help="CNN channels before the final spatial layer; output remains hidden_channels.",
+    )
+
     # -------------------------
     # OPTIONAL: p_mean injection (ablation knob)
     # -------------------------
@@ -353,6 +358,10 @@ def main():
     parser.add_argument("--transformer_ff_mult", type=float, default=4.0)
     parser.add_argument("--transformer_dropout", type=float, default=0.05)
     parser.add_argument("--max_time_steps", type=int, default=32)
+    parser.add_argument(
+        "--time_encoding", default="relative_lag", choices=["relative_lag", "sequence_position"],
+        help="PACT time embedding: lag 0 is current forcing; sequence_position reproduces legacy indexing.",
+    )
 
     # Tagging
     parser.add_argument("--run_tag", type=str, default=None)
@@ -370,6 +379,10 @@ def main():
     args = parser.parse_args()
     if args.encoder_type == "GraphSAGE" and args.num_layers < 2:
         parser.error(f"GraphSAGE encoder requires --num_layers >= 2, got {args.num_layers}.")
+    if args.encoder_type == "CNN" and (args.num_layers < 1 or args.cnn_intermediate_channel < 1):
+        parser.error("CNN requires --num_layers >= 1 and --cnn_intermediate_channel >= 1.")
+    if args.history_hours < 0 or args.history_hours % 6:
+        parser.error("--history_hours must be a nonnegative multiple of 6.")
     if args.grad_accum_steps < 1:
         parser.error(f"--grad_accum_steps must be >= 1, got {args.grad_accum_steps}.")
 
@@ -975,24 +988,19 @@ def main():
                    "Missing pressure uses zero global embeddings and no pressure tokens. "
                    "Did you run preprocessing/time_align with p_mean saving enabled?")
 
-    if history_steps == 0:
-        if model_name == "baseline":
-            print0(f"[Model] SpatialOnlyGraphSAGEBatch (history=0, encoder={args.encoder_type})")
-            model = SpatialOnlyGraphSAGEBatch(
-                in_channels=in_channels,
-                hidden_channels=args.hidden_channels,
-                out_channels=out_channels,
-                num_layers=args.num_layers,
-                dropout=args.dropout,
-                # p_mean injection: optional p_mean usage (ablation)
-                use_pmean=bool(args.use_pmean),
-                pmean_dim=int(args.pmean_dim),
-                encoder_type=args.encoder_type,
-            ).to(device)
-        else:
-            raise ValueError(
-                f"--model {model_name} requires history>0. Use --model baseline for history=0."
-            )
+    if history_steps == 0 and model_name == "baseline":
+        print0(f"[Model] SpatialOnlyGraphSAGEBatch (history=0, encoder={args.encoder_type})")
+        model = SpatialOnlyGraphSAGEBatch(
+            in_channels=in_channels,
+            hidden_channels=args.hidden_channels,
+            out_channels=out_channels,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            use_pmean=bool(args.use_pmean),
+            pmean_dim=int(args.pmean_dim),
+            encoder_type=args.encoder_type,
+            cnn_intermediate_channel=args.cnn_intermediate_channel,
+        ).to(device)
     else:
         if model_name == "baseline":
             print0(f"[Model] SpatioTemporalGraphSAGEBatch + LSTM (encoder={args.encoder_type})")
@@ -1008,12 +1016,14 @@ def main():
                 pmean_T=int(history_steps + 1),
                 pmean_dim=int(args.pmean_dim),
                 encoder_type=args.encoder_type,
+                cnn_intermediate_channel=args.cnn_intermediate_channel,
             ).to(device)
         elif model_name == "perceiver3":
             station_feat_dim = int(station_feat.numel()) if (station_feat is not None) else 0
             print0(
                 f"[Model] PACT (encoder={args.encoder_type}, "
-                f"temporal_block={args.temporal_block}, head_type={args.head_type})"
+                f"temporal_block={args.temporal_block}, head_type={args.head_type}, "
+                f"time_encoding={args.time_encoding}, instantaneous_control={history_steps == 0})"
             )
             model = PACT(
                 in_channels=in_channels,
@@ -1045,6 +1055,8 @@ def main():
                 encoder_type=args.encoder_type,
                 temporal_block=args.temporal_block,
                 head_type=args.head_type,
+                cnn_intermediate_channel=args.cnn_intermediate_channel,
+                time_encoding=args.time_encoding,
             ).to(device)
 
         else:
@@ -1178,6 +1190,9 @@ def main():
                 "encoder_type": args.encoder_type,
                 "temporal_block": args.temporal_block,
                 "head_type": args.head_type,
+                "cnn_intermediate_channel": args.cnn_intermediate_channel if args.encoder_type == "CNN" else None,
+                "time_encoding": args.time_encoding if model_name == "perceiver3" else None,
+                "zero_history_query_residual": model_name == "perceiver3" and history_steps == 0,
                 "grad_accum_steps": int(args.grad_accum_steps),
                 "loss_tag": loss_tag,
                 "root_dir": args.root_dir,
