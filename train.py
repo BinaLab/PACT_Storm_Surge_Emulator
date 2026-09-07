@@ -358,10 +358,6 @@ def main():
     parser.add_argument("--transformer_ff_mult", type=float, default=4.0)
     parser.add_argument("--transformer_dropout", type=float, default=0.05)
     parser.add_argument("--max_time_steps", type=int, default=32)
-    parser.add_argument(
-        "--time_encoding", default="relative_lag", choices=["relative_lag", "sequence_position"],
-        help="PACT time embedding: lag 0 is current forcing; sequence_position reproduces legacy indexing.",
-    )
 
     # Tagging
     parser.add_argument("--run_tag", type=str, default=None)
@@ -1023,7 +1019,7 @@ def main():
             print0(
                 f"[Model] PACT (encoder={args.encoder_type}, "
                 f"temporal_block={args.temporal_block}, head_type={args.head_type}, "
-                f"time_encoding={args.time_encoding}, instantaneous_control={history_steps == 0})"
+                f"time_encoding=relative_lag, instantaneous_control={history_steps == 0})"
             )
             model = PACT(
                 in_channels=in_channels,
@@ -1056,7 +1052,6 @@ def main():
                 temporal_block=args.temporal_block,
                 head_type=args.head_type,
                 cnn_intermediate_channel=args.cnn_intermediate_channel,
-                time_encoding=args.time_encoding,
             ).to(device)
 
         else:
@@ -1191,7 +1186,7 @@ def main():
                 "temporal_block": args.temporal_block,
                 "head_type": args.head_type,
                 "cnn_intermediate_channel": args.cnn_intermediate_channel if args.encoder_type == "CNN" else None,
-                "time_encoding": args.time_encoding if model_name == "perceiver3" else None,
+                "time_encoding": "relative_lag" if model_name == "perceiver3" else None,
                 "zero_history_query_residual": model_name == "perceiver3" and history_steps == 0,
                 "grad_accum_steps": int(args.grad_accum_steps),
                 "loss_tag": loss_tag,
@@ -1375,6 +1370,7 @@ def main():
                     {
                         "model_state_dict": raw_model.state_dict(),
                         "args": vars(args),
+                        "time_encoding": "relative_lag" if model_name == "perceiver3" else None,
 
                         # NEW: x_center/x_scale (robust or zscore, depending on args.x_norm)
                         "x_center": x_center_cpu,

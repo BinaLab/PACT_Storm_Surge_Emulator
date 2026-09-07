@@ -49,7 +49,6 @@ set -u
 : "${MODEL:=baseline}"
 : "${ENCODER_TYPE:=GraphSAGE}"
 : "${CNN_INTERMEDIATE_CHANNEL:=29}"
-: "${TIME_ENCODING:=relative_lag}"
 : "${TEMPORAL_BLOCK:=Transformer}"
 : "${HEAD_TYPE:=dual}"
 : "${STATION_JSON_DIR:=./station_json}"
@@ -322,7 +321,7 @@ write_resolved_config() {
   local name
   local config_vars=(
     TRAIN_PY num_gpus ROOT_DIR TEST_ROOT_DIR STATION MODEL ENCODER_TYPE
-    CNN_INTERMEDIATE_CHANNEL TIME_ENCODING
+    CNN_INTERMEDIATE_CHANNEL
     TEMPORAL_BLOCK HEAD_TYPE STATION_JSON_DIR BATCH_SIZE GRAD_ACCUM_STEPS
     EPOCHS HIDDEN_CHANNELS NUM_LAYERS DROPOUT HEAD_DROPOUT SEED TRAIN_RATIO
     VAL_RATIO SHUFFLE_YEARS FUTURE_ONLY FUTURE_YEAR_THRESHOLD LR_LIST
@@ -369,7 +368,6 @@ echo "Train script:  ${TRAIN_PY}"
 echo "Model:         ${MODEL}"
 echo "Encoder:       ${ENCODER_TYPE}"
 echo "CNN width:     ${CNN_INTERMEDIATE_CHANNEL} (intermediate channels)"
-echo "Time encoding: ${TIME_ENCODING} (PACT)"
 echo "Temporal:      ${TEMPORAL_BLOCK}"
 echo "Head:          ${HEAD_TYPE}"
 if (( GRAD_ACCUM_STEPS > 1 )); then
@@ -605,7 +603,6 @@ for LOSS_MODE in "${LOSS_MODE_LIST[@]}"; do
               if [[ "${MODEL}" == "perceiver3" ]]; then
                 BASE_CMD+=(--head_type "${HEAD_TYPE}"
                            --temporal_block "${TEMPORAL_BLOCK}"
-                           --time_encoding "${TIME_ENCODING}"
                            --node_read_heads "${NODE_READ_HEADS}"
                            --time_read_heads "${TIME_READ_HEADS}"
                            --transformer_layers "${TRANSFORMER_LAYERS}"

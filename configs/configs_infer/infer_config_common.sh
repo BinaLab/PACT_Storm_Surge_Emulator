@@ -2,9 +2,8 @@
 
 INFER_PY="infer.py"
 ENCODER_TYPE="GraphSAGE"
-# Empty means checkpoint settings, including legacy architecture defaults.
+# Empty means the CNN width saved in the checkpoint.
 CNN_INTERMEDIATE_CHANNEL=""
-TIME_ENCODING=""
 TEMPORAL_BLOCK="Transformer"
 HEAD_TYPE="dual"
 BATCH_SIZE=1

@@ -103,11 +103,7 @@ def main():
     )
     parser.add_argument(
         "--cnn_intermediate_channel", type=int, default=None,
-        help="Expected CNN intermediate width. Omit to read checkpoint; legacy uses hidden_channels.",
-    )
-    parser.add_argument(
-        "--time_encoding", default=None, choices=["relative_lag", "sequence_position"],
-        help="Expected PACT time encoding. Omit to read checkpoint; legacy uses sequence_position.",
+        help="Expected CNN intermediate width. Omit to read the saved checkpoint setting.",
     )
     parser.add_argument("--history_hours", type=int, default=-1, help="Override history_hours; -1 uses ckpt args")
     parser.add_argument("--tf32", action="store_true")
@@ -221,23 +217,17 @@ def main():
             f"checkpoint={checkpoint_head_type!r}, requested={args.head_type!r}. "
             "Use a checkpoint trained with the requested prediction head."
         )
-    cnn_intermediate_channel = int(ckpt_args.get("cnn_intermediate_channel", ckpt_args.get("hidden_channels", 64)))
-    time_encoding = str(ckpt_args.get("time_encoding", "sequence_position"))
+    cnn_intermediate_channel = None
     if encoder_type == "CNN":
+        if "cnn_intermediate_channel" not in ckpt_args:
+            raise ValueError("CNN checkpoint is missing cnn_intermediate_channel; retrain with the current architecture.")
+        cnn_intermediate_channel = int(ckpt_args["cnn_intermediate_channel"])
         if cnn_intermediate_channel < 1 or num_layers < 1:
             raise ValueError("CNN checkpoint requires positive intermediate width and layer count.")
         if args.cnn_intermediate_channel is not None and args.cnn_intermediate_channel != cnn_intermediate_channel:
             raise ValueError(
                 "CNN intermediate channel override does not match the checkpoint: "
                 f"checkpoint={cnn_intermediate_channel}, requested={args.cnn_intermediate_channel}."
-            )
-    if model_name == "perceiver3":
-        if time_encoding not in ("relative_lag", "sequence_position"):
-            raise ValueError(f"Unknown checkpoint time_encoding: {time_encoding!r}.")
-        if args.time_encoding is not None and args.time_encoding != time_encoding:
-            raise ValueError(
-                "Time encoding override does not match the checkpoint: "
-                f"checkpoint={time_encoding!r}, requested={args.time_encoding!r}."
             )
     if args.history_hours < -1:
         raise ValueError("--history_hours must be -1 (checkpoint) or a nonnegative multiple of 6.")
@@ -303,7 +293,7 @@ def main():
     if encoder_type == "CNN":
         print(f"[infer] cnn_intermediate_channel={cnn_intermediate_channel}", flush=True)
     if model_name == "perceiver3":
-        print(f"[infer] time_encoding={time_encoding} instantaneous_control={history_steps == 0}", flush=True)
+        print(f"[infer] time_encoding=relative_lag instantaneous_control={history_steps == 0}", flush=True)
     print(f"[infer] history_hours={history_hours} (steps={history_steps})", flush=True)
     print(f"[infer] station={station_key or 'ALL'}", flush=True)
     print(f"[infer] model_label={model_label}", flush=True)
@@ -492,7 +482,6 @@ def main():
             temporal_block=temporal_block,
             head_type=head_type,
             cnn_intermediate_channel=cnn_intermediate_channel,
-            time_encoding=time_encoding,
         )
     else:
         raise ValueError(
@@ -645,7 +634,7 @@ def main():
         temporal_block=temporal_block,
         head_type=head_type,
         cnn_intermediate_channel=cnn_intermediate_channel if encoder_type == "CNN" else None,
-        time_encoding=time_encoding if model_name == "perceiver3" else None,
+        time_encoding="relative_lag" if model_name == "perceiver3" else None,
         zero_history_query_residual=model_name == "perceiver3" and history_steps == 0,
         history_hours=int(history_hours),
         ckpt=args.ckpt,

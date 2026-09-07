@@ -4,7 +4,7 @@
 
 PACT is a config-driven PyTorch Geometric workflow for station-level storm-surge forecasting. It trains and evaluates graph neural emulators on NCEP and CMIP6 forcing graphs, with launchers for single-checkpoint evaluation and multi-dataset sweeps.
 
-See the [architecture changelog](changelog.md) for changes affecting the core architecture study and their checkpoint compatibility.
+See the [architecture changelog](changelog.md) for changes affecting the core architecture study. The core study requires newly trained checkpoints; old temporal embeddings and implicit CNN widths are no longer supported.
 
 The repository currently supports two model families:
 
@@ -151,7 +151,7 @@ The spatial encoder is selected with `ENCODER_TYPE="GraphSAGE"` or `ENCODER_TYPE
 
 For PACT, `TEMPORAL_BLOCK` selects the middle sequence processor: `Transformer`, `MLP`, `LSTM`, or `GRU` (`attn` is accepted as an alias for `Transformer`). Every option receives time embeddings and maps `(B,L,hidden_channels)` back to the same shape, where `L=T` normally; all use the same horizon-query cross-attention readout. `TRANSFORMER_LAYERS` controls the depth of every temporal option, while `TRANSFORMER_FF_MULT` only affects Transformer/MLP. The MLP option is token-wise, so the final horizon cross-attention performs its cross-time aggregation.
 
-`TIME_ENCODING="relative_lag"` is the new training default: chronological forcing `[t-12h, t-6h, t]` uses embedding indices `[2, 1, 0]`. Index 0 always represents the current forcing, and index 1 represents six hours before it. The input order is unchanged for every temporal block. Keep `MAX_TIME_STEPS` fixed across history experiments (the common configs use 32). `TIME_ENCODING="sequence_position"` reproduces the legacy `[0, 1, ..., T-1]` convention.
+PACT always uses relative-to-present lag embeddings: chronological forcing `[t-12h, t-6h, t]` uses embedding indices `[2, 1, 0]`. Index 0 always represents the current forcing, and index 1 represents six hours before it. The input order is unchanged for every temporal block. Keep `MAX_TIME_STEPS` fixed across history experiments (the common configs use 32). There is no `TIME_ENCODING` config or CLI switch. The embedding parameter is `lag_embed.weight`; checkpoints using `time_embed.weight` require retraining.
 
 PACT also supports a 0h **instantaneous-forcing control**. Only this one-timestep case adds the horizon query to the cross-attention context before the prediction head, enabling horizon-specific outputs. Models with 6–48h history retain their original decoder path. Report 0h separately from the main history trend because its decoder has this special treatment; the detailed rationale is in [changelog.md](changelog.md).
 
@@ -391,8 +391,7 @@ Field notes:
 - `MODEL_LABEL`: human-readable model/checkpoint label used in run folder names, for example `P3_Best`.
 - `INFERENCE_RESULTS_ROOT`: common parent directory for every `infer.sh` and `infer_multi.sh` run.
 - `ENCODER_TYPE`: either `GraphSAGE` (the backward-compatible default) or `CNN`.
-- `CNN_INTERMEDIATE_CHANNEL`: CNN intermediate width, default 29 for new training. Inference reads it from the checkpoint; old checkpoints use their saved `hidden_channels`.
-- `TIME_ENCODING`: PACT embedding convention, default `relative_lag` for new training. Inference reads the checkpoint setting and defaults to `sequence_position` for old checkpoints. Both inference config fields default to empty; set them only to assert the expected checkpoint values.
+- `CNN_INTERMEDIATE_CHANNEL`: CNN intermediate width, default 29 for training. Inference requires the saved checkpoint setting, with no fallback to `hidden_channels`. The inference config field defaults to empty; set it only to assert an expected width.
 - `TEMPORAL_BLOCK`: PACT middle block: `Transformer` (backward-compatible default), `MLP`, `LSTM`, or `GRU`.
 - `HEAD_TYPE`: PACT prediction head: `dual` (backward-compatible gated tail head) or `single` (base MLP only).
 - `HISTORY_HOURS`: inference history window; use `HISTORY_HOURS_LIST=(12)` for a training config. Choose a nonnegative multiple of 6 within the stored history (currently at most 48h). PACT supports 0h as the instantaneous-forcing control; the spatial baseline also supports 0h. For inference, match the checkpoint's training window.
@@ -437,7 +436,7 @@ Pass `--out_dir <exact-directory>` only when an explicit output location is desi
 
 Direct `infer.py` calls can omit `--model`, `--encoder_type`, `--temporal_block`, `--head_type`, and `--history_hours` to use checkpoint settings. The shell launchers explicitly pass their configured values, so keep those consistent with the selected checkpoint. Direct calls write metrics and optional predictions; the shell config/command snapshots are produced by the launchers.
 
-`--cnn_intermediate_channel` and `--time_encoding` are optional checkpoint expectations. The inference launchers omit them when their config fields are empty, preserving old CNN widths and position embeddings automatically. Mismatched explicit values are rejected. The resolved values and `zero_history_query_residual` flag appear in metrics JSON.
+`--cnn_intermediate_channel` is an optional checkpoint expectation. The inference launchers omit it when the config field is empty and read the saved width instead. A CNN checkpoint without that field or with a mismatched explicit value is rejected. PACT uses relative-lag encoding unconditionally and strictly loads `lag_embed.weight`, with no conversion from old embedding keys. Metrics JSON records the resolved width, the fixed `time_encoding="relative_lag"` for PACT, and the `zero_history_query_residual` flag.
 
 ## Tests
 

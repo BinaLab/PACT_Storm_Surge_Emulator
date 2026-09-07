@@ -506,7 +506,6 @@ class PACT(nn.Module):
         temporal_block: str = "Transformer",
         head_type: str = "dual",
         cnn_intermediate_channel: int = 29,
-        time_encoding: str = "relative_lag",
     ):
         super().__init__()
         self.in_channels = int(in_channels)
@@ -539,19 +538,13 @@ class PACT(nn.Module):
             batch_first=True,
         )
 
-        if time_encoding not in ("relative_lag", "sequence_position"):
-            raise ValueError(f"Unknown time_encoding: {time_encoding!r}.")
-        self.time_encoding = time_encoding
-        # Retain the state-dict key for old checkpoints. New models index this
-        # learned table by lag: 0=current forcing, 1=six hours before, etc.
-        self.time_embed = nn.Embedding(int(max_time_steps), hidden_channels)
+        # Lag 0 is current forcing, lag 1 is six hours before, etc.
+        self.lag_embed = nn.Embedding(int(max_time_steps), hidden_channels)
 
         self.temporal_block = canonical_temporal_block(temporal_block)
         temporal_depth = int(n_transformer_layers)
         ff_dim = int(hidden_channels * float(transformer_ff_mult))
 
-        # Keep the historical attribute name and parameter keys for strict loading
-        # of existing Transformer checkpoints.
         self.transformer = nn.ModuleList()
         self.temporal_mlp = nn.ModuleList()
         self.temporal_rnn = None
@@ -677,9 +670,9 @@ class PACT(nn.Module):
         if self.cnn_encoder is not None:
             grid_shape = _infer_grid_batch_shape(batch, x_hist.size(0))
 
-        if steps > self.time_embed.num_embeddings:
+        if steps > self.lag_embed.num_embeddings:
             raise ValueError(
-                f"T={steps} exceeds max_time_steps={self.time_embed.num_embeddings}. Increase --max_time_steps."
+                f"T={steps} exceeds max_time_steps={self.lag_embed.num_embeddings}. Increase --max_time_steps."
             )
 
         q_station = self.station_token
@@ -752,16 +745,12 @@ class PACT(nn.Module):
             # with a recurrent block, consider time-wise fusion/interleaving.
             z_seq = torch.cat([z_seq, p_tokens], dim=1)
 
-        if self.time_encoding == "relative_lag":
-            lag_ids = torch.arange(steps - 1, -1, -1, device=z_seq.device)
-            time_emb = self.time_embed(lag_ids).unsqueeze(0)
-        else:
-            position_ids = torch.arange(steps, device=z_seq.device)
-            time_emb = self.time_embed(position_ids).unsqueeze(0)
+        lag_ids = torch.arange(steps - 1, -1, -1, device=z_seq.device)
+        lag_emb = self.lag_embed(lag_ids).unsqueeze(0)
         if z_seq.size(1) == steps:
-            z_seq = z_seq + time_emb
+            z_seq = z_seq + lag_emb
         else:
-            z_seq = z_seq + torch.cat([time_emb, time_emb], dim=1)
+            z_seq = z_seq + torch.cat([lag_emb, lag_emb], dim=1)
 
         memory = z_seq
         if self.temporal_block == "Transformer":

@@ -41,7 +41,6 @@ set -u
 : "${INFERENCE_RESULTS_ROOT:=./All_Inference_Results}"
 : "${ENCODER_TYPE:=GraphSAGE}"
 : "${CNN_INTERMEDIATE_CHANNEL:=}"
-: "${TIME_ENCODING:=}"
 : "${TEMPORAL_BLOCK:=Transformer}"
 : "${HEAD_TYPE:=dual}"
 : "${HISTORY_HOURS:=12}"
@@ -157,7 +156,6 @@ echo "TEST_ROOT_DIR: ${TEST_ROOT_DIR:-<empty => ROOT_DIR year-split test>}"
 echo "Model:         ${MODEL}"
 echo "Encoder:       ${ENCODER_TYPE}"
 echo "CNN width:     ${CNN_INTERMEDIATE_CHANNEL:-<checkpoint>}"
-echo "Time encoding: ${TIME_ENCODING:-<checkpoint>}"
 echo "Temporal:      ${TEMPORAL_BLOCK}"
 echo "Head:          ${HEAD_TYPE}"
 echo "History hours: ${HISTORY_HOURS}"
@@ -285,7 +283,6 @@ if [[ "${PERSISTENT_WORKERS}" -eq 1 ]]; then DL_ARGS+=(--persistent_workers); fi
 THREAD_ARGS=(--torch_threads "${TORCH_THREADS}")
 ARCH_ARGS=()
 if [[ -n "${CNN_INTERMEDIATE_CHANNEL}" ]]; then ARCH_ARGS+=(--cnn_intermediate_channel "${CNN_INTERMEDIATE_CHANNEL}"); fi
-if [[ -n "${TIME_ENCODING}" ]]; then ARCH_ARGS+=(--time_encoding "${TIME_ENCODING}"); fi
 
 # IMPORTANT: pass ONLY args that exist in infer.py
 CMD=(

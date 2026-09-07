@@ -1,4 +1,4 @@
-"""Core-study controls, lag semantics, and checkpoint compatibility."""
+"""Core-study controls, lag semantics, and current checkpoint loading."""
 
 import contextlib
 import io
@@ -83,7 +83,7 @@ class CoreArchitectureTests(unittest.TestCase):
                           model.transformer[0] if temporal == "Transformer" else model.temporal_rnn)
                 memories, indices = [], []
                 h1 = middle.register_forward_pre_hook(lambda module, args: memories.append(args[0].detach().clone()))
-                h2 = model.time_embed.register_forward_pre_hook(lambda module, args: indices.append(args[0].tolist()))
+                h2 = model.lag_embed.register_forward_pre_hook(lambda module, args: indices.append(args[0].tolist()))
                 with torch.no_grad():
                     model(self.make_batch(3, pressure), station_feat=station)
                     model(self.make_batch(9, pressure), station_feat=station)
@@ -131,7 +131,7 @@ class CoreArchitectureTests(unittest.TestCase):
                 h1.remove()
                 h2.remove()
 
-    def test_inference_restores_legacy_cnn_width_and_time_encoding(self):
+    def test_inference_restores_current_architecture_and_rejects_old_embeddings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             graphs = root / "graphs"
@@ -144,16 +144,15 @@ class CoreArchitectureTests(unittest.TestCase):
             for encoder in ("GraphSAGE", "CNN"):
                 for temporal in ("MLP", "LSTM", "GRU", "Transformer"):
                     model = self.make_model(encoder_type=encoder, temporal_block=temporal,
-                                            head_type="single", cnn_intermediate_channel=8,
-                                            time_encoding="sequence_position").eval()
-                    # A legacy checkpoint has neither of the new argument fields.
+                                            head_type="single", cnn_intermediate_channel=32).eval()
                     ckpt = dict(args=dict(model="perceiver3", hidden_channels=8, history_hours=12,
                                           num_layers=2, node_read_heads=2, time_read_heads=2,
                                           transformer_layers=2, max_time_steps=9, encoder_type=encoder,
-                                          temporal_block=temporal, head_type="single"),
+                                          temporal_block=temporal, head_type="single",
+                                          cnn_intermediate_channel=32),
                                 model_state_dict=model.state_dict(), x_center=torch.zeros(5),
                                 x_scale=torch.ones(5), x_clip=0,
-                                y_mean=torch.zeros(6), y_std=torch.ones(6))
+                                y_mean=torch.zeros(6), y_std=torch.ones(6), time_encoding="relative_lag")
                     path = root / f"{encoder}_{temporal}.pth"
                     torch.save(ckpt, path)
                     # Provide the same feature dimension while keeping JSON values explicit.
@@ -169,14 +168,30 @@ class CoreArchitectureTests(unittest.TestCase):
                     with patch.object(sys, "argv", argv), patch.object(torch.cuda, "is_available", return_value=False), contextlib.redirect_stdout(io.StringIO()):
                         infer.main()
                     meta = json.loads(next(out.glob("metrics*.json")).read_text())
-                    self.assertEqual(meta["time_encoding"], "sequence_position")
-                    self.assertEqual(meta["cnn_intermediate_channel"], 8 if encoder == "CNN" else None)
+                    self.assertEqual(meta["time_encoding"], "relative_lag")
+                    self.assertEqual(meta["cnn_intermediate_channel"], 32 if encoder == "CNN" else None)
                     with np.load(next(out.glob("preds*.npz")), allow_pickle=True) as arrays:
                         np.testing.assert_allclose(arrays["y_pred"], expected.numpy(), rtol=1e-5, atol=1e-6)
                     if encoder == "CNN" and temporal == "MLP":
-                        for flag, value in (("--cnn_intermediate_channel", "29"), ("--time_encoding", "relative_lag")):
-                            with patch.object(sys, "argv", [*argv, flag, value]), self.assertRaisesRegex(ValueError, "does not match the checkpoint"):
-                                infer.main()
+                        with patch.object(sys, "argv", [*argv, "--cnn_intermediate_channel", "29"]), self.assertRaisesRegex(ValueError, "does not match the checkpoint"):
+                            infer.main()
+                    if temporal == "MLP":
+                        # Old embedding keys must fail strict loading, rather than
+                        # silently interpreting sequence positions as physical lags.
+                        state = ckpt["model_state_dict"]
+                        state["time_embed.weight"] = state.pop("lag_embed.weight")
+                        torch.save(ckpt, path)
+                        with patch.object(sys, "argv", argv), patch.object(torch.cuda, "is_available", return_value=False), contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "lag_embed.weight"):
+                            infer.main()
+
+    def test_inference_requires_explicit_cnn_checkpoint_width(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "missing_width.pth"
+            for family in ("baseline", "perceiver3"):
+                torch.save(dict(args=dict(model=family, encoder_type="CNN", hidden_channels=8)), path)
+                argv = ["infer.py", "--ckpt", str(path), "--root_dir", tmp]
+                with patch.object(sys, "argv", argv), patch.object(torch.cuda, "is_available", return_value=False), self.assertRaisesRegex(ValueError, "missing cnn_intermediate_channel"):
+                    infer.main()
 
     def test_train_checkpoint_and_inference_support_zero_and_positive_history(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,7 +208,6 @@ class CoreArchitectureTests(unittest.TestCase):
                 torch.save(items, graphs / f"{year}_{year+1}_Battery_fixture_graphs.pt")
             for history in (0, 12):
                 width = 29 if history == 0 else 32
-                encoding = "relative_lag" if history == 0 else "sequence_position"
                 out = root / f"training_{history}"
                 argv = ["train.py", "--root_dir", str(graphs), "--station", "Battery",
                         "--station_json_dir", str(stations), "--output_dir", str(out),
@@ -203,24 +217,25 @@ class CoreArchitectureTests(unittest.TestCase):
                         "--transformer_layers", "1", "--batch_size", "2", "--num_workers", "0",
                         "--loss_mode", "mse", "--x_norm", "zscore", "--x_aug", "0", "--x_clip", "0"]
                 if history:
-                    argv += ["--cnn_intermediate_channel", str(width), "--time_encoding", encoding]
+                    argv += ["--cnn_intermediate_channel", str(width)]
                 with patch.object(sys, "argv", argv), patch.object(torch.cuda, "is_available", return_value=False), contextlib.redirect_stdout(io.StringIO()):
                     train.main()
                 checkpoint = next(out.glob("best*.pth"))
                 saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
                 self.assertEqual(saved["args"]["cnn_intermediate_channel"], width)
-                self.assertEqual(saved["args"]["time_encoding"], encoding)
+                self.assertEqual(saved["time_encoding"], "relative_lag")
+                self.assertIn("lag_embed.weight", saved["model_state_dict"])
                 self.assertEqual(saved["model_state_dict"]["cnn_encoder.layers.0.weight"].shape, (width, 5, 3, 3))
                 snapshot = (out / "config_used.sh").read_text()
                 self.assertIn(f"CNN_INTERMEDIATE_CHANNEL={width}", snapshot)
-                self.assertIn(f"TIME_ENCODING={encoding}", snapshot)
+                self.assertNotIn("TIME_ENCODING=", snapshot)
                 output = root / f"inference_{history}"
                 argv = ["infer.py", "--ckpt", str(checkpoint), "--root_dir", str(graphs),
                         "--station_json_dir", str(stations), "--out_dir", str(output), "--save_npz", "--num_workers", "0"]
                 with patch.object(sys, "argv", argv), patch.object(torch.cuda, "is_available", return_value=False), contextlib.redirect_stdout(io.StringIO()):
                     infer.main()
                 metadata = json.loads(next(output.glob("metrics*.json")).read_text())
-                self.assertEqual(metadata["time_encoding"], encoding)
+                self.assertEqual(metadata["time_encoding"], "relative_lag")
                 self.assertEqual(metadata["cnn_intermediate_channel"], width)
                 self.assertEqual(metadata["zero_history_query_residual"], history == 0)
                 self.assertTrue(np.isfinite(metadata["results"]["_overall"]["rmse"]))
