@@ -5,7 +5,6 @@ from typing import List, Tuple, Dict
 import numpy as np
 import pandas as pd
 from netCDF4 import Dataset, num2date
-from tqdm import tqdm
 
 
 # =========================

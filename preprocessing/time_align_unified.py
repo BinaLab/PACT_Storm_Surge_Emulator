@@ -177,6 +177,41 @@ def build_station_time_index(year: int, nsteps: int) -> np.ndarray:
     return np.array([t0 + timedelta(hours=i) for i in range(nsteps)])
 
 
+def validated_station_time_index(df: pd.DataFrame, year: int, csv_path: Path) -> np.ndarray:
+    """Validate CSV times before using the historical fixed hourly timeline.
+
+    Older CSVs without a ``time`` column retain the implicit-time convention.
+    When timestamps are available, shifted origins, gaps, duplicates and invalid
+    values must fail instead of silently assigning labels to different hours.
+    """
+    if df.empty:
+        raise ValueError(f"Station CSV is empty: {csv_path}")
+
+    expected = build_station_time_index(year, len(df))
+    if "time" not in df.columns:
+        print(
+            f"[WARN] {csv_path} has no 'time' column; using the legacy assumption "
+            f"of hourly rows starting at {expected[0]}."
+        )
+        return expected
+
+    try:
+        actual = pd.DatetimeIndex(pd.to_datetime(df["time"], errors="raise", utc=True)).tz_localize(None)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid station timestamps in {csv_path}: {exc}") from exc
+
+    mismatches = np.flatnonzero(actual != pd.DatetimeIndex(expected))
+    if len(mismatches):
+        row = int(mismatches[0])
+        raise ValueError(
+            f"Station timestamp mismatch in {csv_path} at row {row}: "
+            f"actual={actual[row]}, expected={expected[row]}. "
+            "Expected continuous, unique hourly timestamps beginning at "
+            f"{year}-10-25 01:00 UTC; check the origin, missing hours and duplicates."
+        )
+    return expected
+
+
 # =============================================================================
 # Forcing file discovery (NPZ only)
 # =============================================================================
@@ -374,7 +409,7 @@ def compute_last_full_day_for_year(year: int, stations: List[str], csv_dir: Path
             raise FileNotFoundError(f"Missing CSV for year={year}, station={station}: {csv_path}")
 
         df = pd.read_csv(csv_path)
-        t_station = build_station_time_index(year, len(df))
+        t_station = validated_station_time_index(df, year, csv_path)
 
         valid_mask = np.array([t <= season_cap for t in t_station], dtype=bool)
         if not valid_mask.any():
@@ -528,7 +563,7 @@ def process_one_pair(
     if not {"nc", "nc_tide"}.issubset(df.columns):
         raise KeyError(f"CSV {csv_path} must contain columns 'nc' and 'nc_tide'. Found: {list(df.columns)}")
 
-    t_station_full = build_station_time_index(year, len(df))
+    t_station_full = validated_station_time_index(df, year, csv_path)
     t_start_station = datetime(year, 11, 1, 0, 0)
 
     mask_station = (t_station_full >= t_start_station) & (t_station_full <= t_end_station)

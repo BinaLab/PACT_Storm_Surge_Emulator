@@ -6,6 +6,9 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+# shellcheck source=emulator/common/inference_artifacts.sh
+source "$(dirname "${BASH_SOURCE[0]}")/emulator/common/inference_artifacts.sh"
+
 # ============================================================
 # infer_multi.sh
 # - Non-slurm inference sweep (runs sequentially)
@@ -80,19 +83,7 @@ case "${HEAD_TYPE,,}" in
   *) echo "[FATAL] HEAD_TYPE must be single or dual; got '${HEAD_TYPE}'"; exit 1 ;;
 esac
 
-# Resolve checkpoint (supports glob patterns)
-resolve_ckpt () {
-  local pat="$1"
-  if [[ -z "$pat" ]]; then return 1; fi
-  if [[ -f "$pat" ]]; then echo "$pat"; return 0; fi
-  shopt -s nullglob
-  # shellcheck disable=SC2206
-  local arr=( $pat )
-  shopt -u nullglob
-  if [[ "${#arr[@]}" -eq 0 ]]; then return 1; fi
-  ls -1t "${arr[@]}" 2>/dev/null | head -n 1
-}
-
+# Dataset labels for artifact directories
 infer_dataset_tag () {
   local root="${1%/}"
   local leaf
@@ -125,7 +116,11 @@ init_conda () {
     return 0
   fi
   set +u
-  module load "${CONDA_MODULE}"
+  if command -v module >/dev/null 2>&1; then
+    module load "${CONDA_MODULE}" || echo "[WARN] module load ${CONDA_MODULE} failed. Continuing with CONDA_SH=${CONDA_SH}."
+  else
+    echo "[WARN] module command not found. Continuing with CONDA_SH=${CONDA_SH}."
+  fi
   # shellcheck disable=SC1090
   source "${CONDA_SH}"
   conda activate "${CONDA_ENV}"
@@ -237,7 +232,7 @@ for spec in "${RUNS[@]}"; do
   mkdir -p "${OUT_DIR}"
 
   LOG_FILE="${RUN_DIR}/infer_${STATION}_${MODEL}_hist${HISTORY_HOURS}h_${RUNSTAMP}.log"
-  cp -f "${CONFIG_PATH}" "${RUN_DIR}/infer_config_used.sh" || true
+  write_infer_config_snapshot "${RUN_DIR}/infer_config_used.sh"
 
   echo "-----------------------------------------" | tee -a "${LOG_FILE}"
   echo "[RUN] CONFIG_NAME=${NAME}"                  | tee -a "${LOG_FILE}"
@@ -253,27 +248,30 @@ for spec in "${RUNS[@]}"; do
     TEST_ARGS=(--test_root_dir "${TEST_ROOT_DIR}")
   fi
 
-  "${PYTHON_BIN}" -u "${INFER_PY}" \
-    --root_dir "${ROOT_DIR}" \
-    "${TEST_ARGS[@]}" \
-    "${STATION_ARGS[@]}" \
-    --station_json_dir "${STATION_JSON_DIR}" \
-    --model "${MODEL}" \
-    --model_label "${MODEL_LABEL}" \
-    --encoder_type "${ENCODER_TYPE}" \
-    --temporal_block "${TEMPORAL_BLOCK}" \
-    --head_type "${HEAD_TYPE}" \
-    --history_hours "${HISTORY_HOURS}" \
-    --batch_size "${BATCH_SIZE}" \
-    --ckpt "${CKPT_RESOLVED}" \
-    --out_dir "${OUT_DIR}" \
-    --save_npz \
-    "${YEARS_ARGS[@]}" \
-    "${AMP_ARGS[@]}" \
-    "${TF32_ARGS[@]}" \
-    "${THREAD_ARGS[@]}" \
-    "${DL_ARGS[@]}" \
-    2>&1 | tee -a "${LOG_FILE}"
+  CMD=(
+    "${PYTHON_BIN}" -u "${INFER_PY}"
+    --root_dir "${ROOT_DIR}"
+    "${TEST_ARGS[@]}"
+    "${STATION_ARGS[@]}"
+    --station_json_dir "${STATION_JSON_DIR}"
+    --model "${MODEL}"
+    --model_label "${MODEL_LABEL}"
+    --encoder_type "${ENCODER_TYPE}"
+    --temporal_block "${TEMPORAL_BLOCK}"
+    --head_type "${HEAD_TYPE}"
+    --history_hours "${HISTORY_HOURS}"
+    --batch_size "${BATCH_SIZE}"
+    --ckpt "${CKPT_RESOLVED}"
+    --out_dir "${OUT_DIR}"
+    --save_npz
+    "${YEARS_ARGS[@]}"
+    "${AMP_ARGS[@]}"
+    "${TF32_ARGS[@]}"
+    "${THREAD_ARGS[@]}"
+    "${DL_ARGS[@]}"
+  )
+  write_infer_command "${RUN_DIR}/command_used.sh" "${CMD[@]}"
+  "${CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"
 
   echo "[DONE RUN] outputs in: ${OUT_DIR}" | tee -a "${LOG_FILE}"
 done

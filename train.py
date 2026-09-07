@@ -286,7 +286,8 @@ def main():
         help=(
             "If set, expose global mean pressure metadata (p_mean_hist/p_mean_curr) to the model. "
             "Baseline: Option 1 (concat global encoding). Perceiver3: controlled by --perceiver_pmean_mode (tokens/global/both). "
-            "Safe to enable even if the dataset lacks p_mean fields (it becomes a no-op)."
+            "Missing p_mean fields contribute zero global embeddings and no pressure tokens; "
+            "the enabled model architecture is retained."
         ),
     )
     parser.add_argument(
@@ -367,6 +368,8 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.encoder_type == "GraphSAGE" and args.num_layers < 2:
+        parser.error(f"GraphSAGE encoder requires --num_layers >= 2, got {args.num_layers}.")
     if args.grad_accum_steps < 1:
         parser.error(f"--grad_accum_steps must be >= 1, got {args.grad_accum_steps}.")
 
@@ -934,7 +937,7 @@ def main():
     mp_context = args.mp_context
 
     train_loader = build_loader(train_dataset, train_sampler, args.batch_size, args.num_workers,
-                                pin_memory, persistent_workers, prefetch_factor, mp_context)
+                                pin_memory, persistent_workers, prefetch_factor, mp_context, shuffle=True)
     val_loader = build_loader(val_dataset, val_sampler, args.batch_size, args.num_workers,
                               pin_memory, persistent_workers, prefetch_factor, mp_context)
     test_loader = build_loader(test_dataset, test_sampler, args.batch_size, args.num_workers,
@@ -953,7 +956,7 @@ def main():
     #
     # If you enabled --use_pmean but your current graphs do not
     # contain p_mean fields yet, the model-side injection becomes
-    # a no-op (thanks to hasattr checks). We still print a single
+    # zero global embedding (and no pressure tokens). We still print a single
     # rank0 warning so ablation runs are not silently misleading.
     # ---------------------------------------------------------
     if is_main_process() and bool(args.use_pmean):
@@ -969,7 +972,8 @@ def main():
             has_pmean_any = False
         if not has_pmean_any:
             print0("[Warning] --use_pmean was set, but p_mean fields were not found in the loaded graphs (train split). "
-                   "Model injection will be skipped. Did you run preprocessing/time_align with p_mean saving enabled?")
+                   "Missing pressure uses zero global embeddings and no pressure tokens. "
+                   "Did you run preprocessing/time_align with p_mean saving enabled?")
 
     if history_steps == 0:
         if model_name == "baseline":

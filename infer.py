@@ -145,7 +145,7 @@ def main():
         ),
     )
 
-    # >>> INJECTED: optional subset of years (comma-separated), avoids hardcoding
+    # optional subset of years (comma-separated), avoids hardcoding
     # If not set, we evaluate all available years in the selected test set.
     parser.add_argument(
         "--years",
@@ -153,7 +153,6 @@ def main():
         default="",
         help="Optional comma-separated list of year tags to evaluate (e.g., '1979_1980,1980_1981'). Default: all years.",
     )
-    # <<< END INJECTED
 
     args = parser.parse_args()
 
@@ -186,6 +185,9 @@ def main():
     model_name = args.model if args.model else str(ckpt_args.get("model", "baseline"))
     checkpoint_encoder_type = str(ckpt_args.get("encoder_type") or "GraphSAGE")
     encoder_type = args.encoder_type if args.encoder_type else checkpoint_encoder_type
+    num_layers = int(ckpt_args.get("num_layers", 2))
+    if encoder_type == "GraphSAGE" and num_layers < 2:
+        raise ValueError(f"GraphSAGE encoder requires num_layers >= 2, got {num_layers} in checkpoint args.")
     if args.encoder_type and args.encoder_type != checkpoint_encoder_type:
         raise ValueError(
             "Encoder override does not match the checkpoint: "
@@ -285,7 +287,7 @@ def main():
         torch.cuda.empty_cache()
 
     # stats from checkpoint (PROPER normalization)
-    # >>> INJECTED: current train.py stores x_center/x_scale (robust/zscore/mag)
+    # current train.py stores x_center/x_scale (robust/zscore/mag)
     # Backward-compatible load: fall back to x_mean/x_std if needed.
     x_center_cpu = _as_feature_vector(ckpt.get("x_center", ckpt.get("x_mean")), "x_center")
     x_scale_cpu = _as_feature_vector(ckpt.get("x_scale", ckpt.get("x_std")), "x_scale").clamp_min(1e-6)
@@ -295,7 +297,6 @@ def main():
     # NEW: p_mean normalization stats (scalar) if present
     pmean_center_cpu = ckpt.get("pmean_center", None)
     pmean_scale_cpu = ckpt.get("pmean_scale", None)
-    # <<< END INJECTED
 
     # y stats are per-horizon vectors; keep as (1, H)
     y_mean_cpu = ckpt["y_mean"].float().view(1, -1)
@@ -325,7 +326,24 @@ def main():
     # Build only the store used by this inference mode. Filtering filenames
     # before torch.load avoids materializing unrelated stations in CPU RAM.
     external = bool(args.test_root_dir.strip() != "")
+    split_parameters = dict(
+        train_frac=float(ckpt_args.get("train_ratio", 0.6)),
+        val_frac=float(ckpt_args.get("val_ratio", 0.2)),
+        shuffle_years=bool(ckpt_args.get("shuffle_years", False)),
+        future_only=bool(ckpt_args.get("future_only", False)),
+        future_year_threshold=int(ckpt_args.get("future_year_threshold", 2030)),
+        split_seed=int(ckpt_args.get("seed", 42)),
+    )
+    evaluation_scope = "external_all_years" if external else "checkpoint_year_split"
     if external:
+        if os.path.realpath(args.test_root_dir) == os.path.realpath(args.root_dir):
+            print(
+                "[WARN] TEST_ROOT_DIR resolves to ROOT_DIR. This selects ALL source years "
+                "before --years filtering, including training/validation years; "
+                "it is not a held-out test by construction. "
+                "Omit --test_root_dir to use the checkpoint's test split.",
+                flush=True,
+            )
         store_test = ForcingGraphStore(
             args.test_root_dir,
             pattern="*graphs.pt",
@@ -339,7 +357,7 @@ def main():
         )
         store_for_test = store_test
     else:
-        store_ncep = ForcingGraphStore(
+        store_source = ForcingGraphStore(
             args.root_dir,
             pattern="*graphs.pt",
             station_filter=station_key,
@@ -347,13 +365,12 @@ def main():
             strict_station_filter=False,
         )
         test_indices_all = make_year_split_indices(
-            store_ncep,
+            store_source,
             part="test",
             station_filter=station_key,
-            train_frac=0.6,
-            val_frac=0.2,
+            **split_parameters,
         )
-        store_for_test = store_ncep
+        store_for_test = store_source
     test_tag = target_tag
 
     if len(test_indices_all) == 0:
@@ -364,7 +381,6 @@ def main():
     out_channels = store_for_test.graphs[test_indices_all[0]].y.numel()
 
     hidden_channels = int(ckpt_args.get("hidden_channels", 64))
-    num_layers = int(ckpt_args.get("num_layers", 2))
     dropout = float(ckpt_args.get("dropout", 0.0))
     head_dropout = float(ckpt_args.get("head_dropout", 0.0))
 
@@ -380,11 +396,10 @@ def main():
     tail_tanh_clip = float(ckpt_args.get("tail_tanh_clip", 2.5))
     alpha_init_logit = float(ckpt_args.get("alpha_init_logit", -2.0))
 
-    # >>> INJECTED: p_mean ablation knobs must match train.py to load weights strictly
+    # p_mean ablation knobs must match train.py to load weights strictly
     use_pmean = bool(ckpt_args.get("use_pmean", False))
     pmean_dim = int(ckpt_args.get("pmean_dim", 32))
     perceiver_pmean_mode = str(ckpt_args.get("perceiver_pmean_mode", "tokens"))
-    # <<< END INJECTED
 
     if model_name == "baseline":
         if history_steps == 0:
@@ -469,13 +484,12 @@ def main():
 
     years = sorted(year_to_indices.keys())
 
-    # >>> INJECTED: optional year subset
+    # optional year subset
     if args.years.strip():
         want = [y.strip() for y in args.years.split(",") if y.strip()]
         years = [y for y in years if y in set(want)]
         if not years:
             raise RuntimeError(f"--years was set but none matched available years. want={want} available={sorted(year_to_indices.keys())}")
-    # <<< END INJECTED
 
     print(f"[infer] test_tag={test_tag} years={years}", flush=True)
 
@@ -535,10 +549,10 @@ def main():
             timing_year_seconds.append(float(dt))
             timing_year_labels.append(f"{y0_rep}_{y1_rep}" if (y0_rep is not None and y1_rep is not None) else str(y))
 
-        if args.save_npz:
-            y_true_all.append(y_t)
-            y_pred_all.append(y_p)
-            tags_all.append(tags)
+        # Summaries use exactly the evaluated samples; --save_npz only controls disk I/O.
+        y_true_all.append(y_t)
+        y_pred_all.append(y_p)
+        tags_all.append(tags)
 
     # Avg time per year (exclude 2014-2015)
     if timing_year_seconds:
@@ -557,92 +571,33 @@ def main():
     # Past/future split rule (fixed):
     #   past  : 1979–2014
     #   future: 2070–2099
-    past_indices = []
-    future_indices = []
-    other_indices = []
-    for idx in test_indices_all:
-        tag = store_for_test.graph_tags[idx]
-        y0, _ = parse_year_tag(tag)
-        grp = classify_past_future(y0)
-        if grp == "past":
-            past_indices.append(idx)
-        elif grp == "future":
-            future_indices.append(idx)
-        else:
-            other_indices.append(idx)
-
     def _metrics_from_arrays(YT: np.ndarray, YP: np.ndarray) -> tuple[float, float]:
         if YT.size == 0:
             return (float("nan"), float("nan"))
-        err = (YP - YT).reshape(-1)
+        err = (YP.astype(np.float64) - YT.astype(np.float64)).reshape(-1)
         return (float(np.sqrt(np.mean(err**2))), float(np.mean(np.abs(err))))
 
-    if args.save_npz and y_true_all:
-        YT_all = np.concatenate(y_true_all, axis=0)
-        YP_all = np.concatenate(y_pred_all, axis=0)
-        TAGS_all = np.concatenate(tags_all, axis=0) if tags_all else np.array([], dtype=object)
+    YT_all = np.concatenate(y_true_all, axis=0)
+    YP_all = np.concatenate(y_pred_all, axis=0)
+    TAGS_all = np.concatenate(tags_all, axis=0)
+    overall_rmse, overall_mae = _metrics_from_arrays(YT_all, YP_all)
 
-        overall_rmse, overall_mae = _metrics_from_arrays(YT_all, YP_all)
-
-        # Split arrays by tag->year0
-        groups = []
-        for t in TAGS_all.tolist():
-            y0, _ = parse_year_tag(t)
-            groups.append(classify_past_future(y0))
-        groups = np.array(groups, dtype=object)
-
-        m_past = (groups == "past")
-        m_future = (groups == "future")
-
-        past_rmse, past_mae = _metrics_from_arrays(YT_all[m_past], YP_all[m_past])
-        fut_rmse, fut_mae = _metrics_from_arrays(YT_all[m_future], YP_all[m_future])
-    else:
-        # Loader-based metrics to avoid requiring --save_npz
-        def _run_subset(indices):
-            if not indices:
-                return (float("nan"), float("nan"))
-            ds = ForcingGraphView(store_for_test, indices, history_steps=history_steps)
-            ld = build_loader(
-                ds,
-                sampler=None,
-                batch_size=args.batch_size,
-                num_workers=args.num_workers,
-                pin_memory=pin_memory,
-                persistent_workers=persistent_workers,
-                prefetch_factor=int(args.prefetch_factor),
-                mp_context=args.mp_context,
-            )
-            r, m, _, _, _, _ = infer_one_loader(
-                model=model,
-                loader=ld,
-                device=device,
-                x_center=x_center,
-                x_scale=x_scale,
-                x_clip=float(x_clip),
-                pmean_center=pmean_center,
-                pmean_scale=pmean_scale,
-                pmean_clip=float(x_clip),
-                y_mean=y_mean,
-                y_std=y_std,
-                use_amp=use_amp,
-                amp_dtype=amp_dtype,
-                model_name=model_name,
-                station_feat=station_feat,
-                gpu_sync_timing=bool(args.gpu_sync_timing),
-            )
-            return (float(r), float(m))
-
-        overall_rmse, overall_mae = _run_subset(test_indices_all)
-        past_rmse, past_mae = _run_subset(past_indices)
-        fut_rmse, fut_mae = _run_subset(future_indices)
+    groups = np.array(
+        [classify_past_future(parse_year_tag(t)[0]) for t in TAGS_all],
+        dtype=object,
+    )
+    m_past = groups == "past"
+    m_future = groups == "future"
+    past_rmse, past_mae = _metrics_from_arrays(YT_all[m_past], YP_all[m_past])
+    fut_rmse, fut_mae = _metrics_from_arrays(YT_all[m_future], YP_all[m_future])
 
     results["_overall"] = dict(rmse=float(overall_rmse), mae=float(overall_mae), unit="physical")
     results["_overall_past"] = dict(rmse=float(past_rmse), mae=float(past_mae), unit="physical", years="1979-2014")
     results["_overall_future"] = dict(rmse=float(fut_rmse), mae=float(fut_mae), unit="physical", years="2070-2099")
 
     print(f"[Overall | physical] rmse={overall_rmse:.6e} mae={overall_mae:.6e}", flush=True)
-    print(f"[Overall Past 1979-2014 | physical] rmse={past_rmse:.6e} mae={past_mae:.6e} (n_graphs={len(past_indices)})", flush=True)
-    print(f"[Overall Future 2070-2099 | physical] rmse={fut_rmse:.6e} mae={fut_mae:.6e} (n_graphs={len(future_indices)})", flush=True)
+    print(f"[Overall Past 1979-2014 | physical] rmse={past_rmse:.6e} mae={past_mae:.6e} (n_graphs={int(m_past.sum())})", flush=True)
+    print(f"[Overall Future 2070-2099 | physical] rmse={fut_rmse:.6e} mae={fut_mae:.6e} (n_graphs={int(m_future.sum())})", flush=True)
     # write json
     meta = dict(
         timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -659,14 +614,18 @@ def main():
         ckpt=args.ckpt,
         root_dir=args.root_dir,
         test_root_dir=args.test_root_dir,
+        evaluation_scope=evaluation_scope,
+        split_parameters=split_parameters if not external else None,
+        years_evaluated=years,
+        inference_args=vars(args).copy(),
+        checkpoint_args=ckpt_args,
         results=results,
         metric_space="physical",
         metric_note="RMSE/MAE computed on denormalized predictions in original y units (e.g., meters).",
-        # >>> INJECTED: record p_mean usage for reproducibility
+        # record p_mean usage for reproducibility
         use_pmean=bool(use_pmean),
         perceiver_pmean_mode=str(perceiver_pmean_mode),
         x_clip=float(x_clip),
-        # <<< END INJECTED
     )
     encoder_file_tag = "" if encoder_type == "GraphSAGE" else f"_{encoder_type}"
     temporal_file_tag = (
@@ -686,14 +645,11 @@ def main():
 
     # save npz
     if args.save_npz and y_true_all:
-        YT = np.concatenate(y_true_all, axis=0)
-        YP = np.concatenate(y_pred_all, axis=0)
-        TAGS = np.concatenate(tags_all, axis=0)
         npz_path = os.path.join(
             args.out_dir,
             f"preds_{test_tag}_{station_tag}_{model_name}{model_file_tag}_ALLYEARS.npz",
         )
-        np.savez(npz_path, y_true=YT, y_pred=YP, tags=TAGS)
+        np.savez(npz_path, y_true=YT_all, y_pred=YP_all, tags=TAGS_all)
         print(f"Saved predictions -> {npz_path}", flush=True)
 
 

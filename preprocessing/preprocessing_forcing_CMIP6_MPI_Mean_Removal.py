@@ -92,20 +92,17 @@ Lon_grid_local, Lat_grid_local = np.meshgrid(lon_local, lat_local)  # (nlat, nlo
 
 # Optional save of grid metadata
 np.savez(
-    os.path.join(out_dir, "grid_local_cmip6_mri.npz"),
+    os.path.join(out_dir, "grid_local_cmip6_mpi.npz"),
     lat_local=lat_local,
     lon_local=lon_local,
     lat_forcing=lat_forcing,
     lon_forcing=lon_forcing,
     LAT_MIN=LAT_MIN, LAT_MAX=LAT_MAX, LON_MIN=LON_MIN, LON_MAX=LON_MAX,
 )
-print("\nSaved local grid metadata to:", os.path.join(out_dir, "grid_local_cmip6_mri.npz"))
+print("\nSaved local grid metadata to:", os.path.join(out_dir, "grid_local_cmip6_mpi.npz"))
 
 # Feature index of pressure in the 3 columns coming from fort.22
 P_IDX = 2
-
-forcing_local_by_year_3h = {}
-forcing_local_by_year_6h = {}
 
 for year in years:
     fort_path = os.path.join(forcing_dir, f"fort_{year}.22")
@@ -205,9 +202,6 @@ for year in years:
         lon_forcing=lon_forcing,
     )
 
-    forcing_local_by_year_3h[year] = forcing_5d_local_3h
-    forcing_local_by_year_6h[year] = forcing_5d_local_6h
-
     print(
         f"{year}: "
         f"3h TIME={TIME_3h}, shape={forcing_5d_local_3h.shape}, "
@@ -216,5 +210,5 @@ for year in years:
         f"t=[{start_dt} -> {end_dt_6h}]"
     )
 
-print("\nDone. Saved processed CMIP6_MRI local forcing under:", out_dir)
+print("\nDone. Saved processed CMIP6_MPI local forcing under:", out_dir)
 print("Each year now has both .npy and .npz (npz includes p_mean_t).")

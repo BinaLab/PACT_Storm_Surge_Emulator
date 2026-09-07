@@ -7,6 +7,9 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+# shellcheck source=emulator/common/inference_artifacts.sh
+source "$(dirname "${BASH_SOURCE[0]}")/emulator/common/inference_artifacts.sh"
+
 # ============================================================
 # infer.sh
 # - Launch inference inside tmux (interactive use)
@@ -33,7 +36,6 @@ set -u
 : "${ROOT_DIR:=./Data/NCEP/graphs}"
 : "${TEST_ROOT_DIR:=}"
 : "${STATION:=Battery}"
-: "${NAME:=stormsurge_infer}"
 : "${MODEL:=baseline}"
 : "${MODEL_LABEL:=${MODEL}}"
 : "${INFERENCE_RESULTS_ROOT:=./All_Inference_Results}"
@@ -87,51 +89,9 @@ case "${HEAD_TYPE,,}" in
   *) echo "[FATAL] HEAD_TYPE must be single or dual; got '${HEAD_TYPE}'"; exit 1 ;;
 esac
 
-init_conda () {
-  if [[ "${DO_CONDA}" -ne 1 ]]; then
-    return 0
-  fi
-  if [[ ! -f "${CONDA_SH}" ]]; then
-    echo "[WARN] conda.sh not found at ${CONDA_SH}. Skipping conda activation."
-    return 0
-  fi
-  set +u
-  module load "${CONDA_MODULE}"
-  # shellcheck disable=SC1090
-  source "${CONDA_SH}"
-  conda activate "${CONDA_ENV}"
-  hash -r
-  set -u
-}
-
-if [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
-  PYTHON_BIN="${CONDA_PREFIX}/bin/python"
-else
-  PYTHON_BIN="$(command -v python)"
-fi
-
 # =========================
-# Helper: resolve checkpoint path (supports glob patterns)
+# Dataset labels for artifact directories
 # =========================
-resolve_ckpt () {
-  local pat="$1"
-  if [[ -z "$pat" ]]; then
-    return 1
-  fi
-  if [[ -f "$pat" ]]; then
-    echo "$pat"
-    return 0
-  fi
-  shopt -s nullglob
-  # shellcheck disable=SC2206
-  local arr=( $pat )
-  shopt -u nullglob
-  if [[ "${#arr[@]}" -eq 0 ]]; then
-    return 1
-  fi
-  ls -1t "${arr[@]}" 2>/dev/null | head -n 1
-}
-
 infer_dataset_tag () {
   local root="${1%/}"
   local leaf
@@ -202,147 +162,83 @@ echo "Years:         ${YEARS:-<all>}"
 echo "========================================="
 
 RUNNER="${RUN_DIR}/run_infer.sh"
-cat > "${RUNNER}" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-cd "${WORKDIR}"
-
-# Re-source config inside tmux (single source of truth)
-set +u
-# shellcheck disable=SC1090
-source "${CONFIG_PATH}"
-set -u
-
-: "\${INFER_PY:=infer.py}"
-: "\${ROOT_DIR:=./Data/NCEP/graphs}"
-: "\${TEST_ROOT_DIR:=}"
-: "\${STATION:=Battery}"
-: "\${MODEL:=baseline}"
-: "\${MODEL_LABEL:=\${MODEL}}"
-: "\${ENCODER_TYPE:=GraphSAGE}"
-: "\${TEMPORAL_BLOCK:=Transformer}"
-: "\${HEAD_TYPE:=dual}"
-: "\${HISTORY_HOURS:=12}"
-: "\${BATCH_SIZE:=1}"
-: "\${STATION_JSON_DIR:=./station_json}"
-: "\${YEARS:=}"
-
-case "\${ENCODER_TYPE}" in
-  GraphSAGE|CNN) ;;
-  *) echo "[FATAL] ENCODER_TYPE must be GraphSAGE or CNN; got '\${ENCODER_TYPE}'"; exit 1 ;;
-esac
-
-case "\${TEMPORAL_BLOCK,,}" in
-  transformer|attn) TEMPORAL_BLOCK="Transformer" ;;
-  mlp) TEMPORAL_BLOCK="MLP" ;;
-  lstm) TEMPORAL_BLOCK="LSTM" ;;
-  gru) TEMPORAL_BLOCK="GRU" ;;
-  *) echo "[FATAL] TEMPORAL_BLOCK must be MLP, LSTM, GRU, or Transformer; got '\${TEMPORAL_BLOCK}'"; exit 1 ;;
-esac
-
-case "\${HEAD_TYPE,,}" in
-  single|dual) HEAD_TYPE="\${HEAD_TYPE,,}" ;;
-  *) echo "[FATAL] HEAD_TYPE must be single or dual; got '\${HEAD_TYPE}'"; exit 1 ;;
-esac
-
-: "\${CUDA_LAUNCH_BLOCKING_FLAG:=0}"
-: "\${TORCH_GPU_PROBE:=0}"
-: "\${FAIL_IF_NO_SLURM:=0}"
-: "\${DO_CONDA:=1}"
-: "\${CONDA_MODULE:=anaconda}"
-: "\${CONDA_SH:=/software/u22/anaconda/python3.9/etc/profile.d/conda.sh}"
-: "\${CONDA_ENV:=torchpyg-cu124}"
-
-: "\${USE_AMP:=1}"
-: "\${AMP_DTYPE:=bf16}"
-: "\${USE_TF32:=1}"
-: "\${TORCH_THREADS:=1}"
-
-: "\${NUM_WORKERS:=0}"
-: "\${PIN_MEMORY:=0}"
-: "\${PERSISTENT_WORKERS:=0}"
-: "\${PREFETCH_FACTOR:=0}"
-: "\${MP_CONTEXT:=fork}"
-
-: "\${CKPT_PATH:=}"
-
+CONFIG_SNAPSHOT="${RUN_DIR}/infer_config_used.sh"
+write_infer_config_snapshot "${CONFIG_SNAPSHOT}"
+{
+  printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+  printf 'cd -- %q\n' "${WORKDIR}"
+  printf 'source %q\n' "${CONFIG_SNAPSHOT}"
+  # Embed the command writer so replay does not depend on the helper script.
+  declare -f write_infer_command
+  cat <<'RUNNER_BODY'
 init_conda () {
-  if [[ "\${DO_CONDA}" -ne 1 ]]; then
+  if [[ "${DO_CONDA}" -ne 1 ]]; then
     return 0
   fi
-  if [[ ! -f "\${CONDA_SH}" ]]; then
-    echo "[WARN] conda.sh not found at \${CONDA_SH}. Skipping conda activation."
+  if [[ ! -f "${CONDA_SH}" ]]; then
+    echo "[WARN] conda.sh not found at ${CONDA_SH}. Skipping conda activation."
     return 0
   fi
   set +u
-  module load "\${CONDA_MODULE}"
+  if command -v module >/dev/null 2>&1; then
+    module load "${CONDA_MODULE}" || echo "[WARN] module load ${CONDA_MODULE} failed. Continuing with CONDA_SH=${CONDA_SH}."
+  else
+    echo "[WARN] module command not found. Continuing with CONDA_SH=${CONDA_SH}."
+  fi
   # shellcheck disable=SC1090
-  source "\${CONDA_SH}"
-  conda activate "\${CONDA_ENV}"
+  source "${CONDA_SH}"
+  conda activate "${CONDA_ENV}"
   hash -r
   set -u
 }
 
 init_conda
 
-if [[ -n "\${CONDA_PREFIX:-}" && -x "\${CONDA_PREFIX}/bin/python" ]]; then
-  PYTHON_BIN="\${CONDA_PREFIX}/bin/python"
+if [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
+  PYTHON_BIN="${CONDA_PREFIX}/bin/python"
 else
-  PYTHON_BIN="\$(command -v python)"
+  PYTHON_BIN="$(command -v python)"
 fi
 
 export PYTHONUNBUFFERED=1
 
 # CUDA debug
-if [[ "\${CUDA_LAUNCH_BLOCKING_FLAG}" -eq 1 ]]; then
+if [[ "${CUDA_LAUNCH_BLOCKING_FLAG}" -eq 1 ]]; then
   export CUDA_LAUNCH_BLOCKING=1
 fi
 
 # Bind to Slurm-assigned GPU (best effort; harmless when not in Slurm)
-if [[ -n "\${SLURM_STEP_GPUS:-}" ]]; then
-  export CUDA_VISIBLE_DEVICES="\${SLURM_STEP_GPUS}"
-elif [[ -n "\${SLURM_JOB_GPUS:-}" ]]; then
-  export CUDA_VISIBLE_DEVICES="\${SLURM_JOB_GPUS}"
+if [[ -n "${SLURM_STEP_GPUS:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES="${SLURM_STEP_GPUS}"
+elif [[ -n "${SLURM_JOB_GPUS:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES="${SLURM_JOB_GPUS}"
 fi
 
-# Resolve checkpoint (supports glob patterns)
-resolve_ckpt () {
-  local pat="\$1"
-  if [[ -z "\$pat" ]]; then return 1; fi
-  if [[ -f "\$pat" ]]; then echo "\$pat"; return 0; fi
-  shopt -s nullglob
-  # shellcheck disable=SC2206
-  local arr=( \$pat )
-  shopt -u nullglob
-  if [[ "\${#arr[@]}" -eq 0 ]]; then return 1; fi
-  ls -1t "\${arr[@]}" 2>/dev/null | head -n 1
-}
-CKPT_RESOLVED="\$(resolve_ckpt "\${CKPT_PATH}" || true)"
-if [[ -z "\${CKPT_RESOLVED}" ]]; then
-  echo "[FATAL] CKPT_PATH does not resolve to a file: \${CKPT_PATH}"
+# Use the checkpoint selected before tmux started; never re-expand the glob.
+if [[ ! -f "${CKPT_RESOLVED}" ]]; then
+  echo "[FATAL] Selected checkpoint no longer exists: ${CKPT_RESOLVED}"
   exit 2
 fi
 
-LOG_FILE="${RUN_DIR}/infer_\${STATION}_${TEST_TAG}_\${MODEL}_hist\${HISTORY_HOURS}h_${RUNSTAMP}.log"
-: > "\${LOG_FILE}"
+LOG_FILE="${RUN_DIR}/infer_${STATION}_${TEST_TAG}_${MODEL}_hist${HISTORY_HOURS}h_${RUNSTAMP}.log"
+: > "${LOG_FILE}"
 
 # Optional: basic GPU / torch probe (uses your existing config flags)
 {
   echo "========================================="
-  echo "[tmux] host=\$(hostname)"
-  echo "[tmux] SLURM_JOB_ID=\${SLURM_JOB_ID:-<none>}"
-  echo "[tmux] CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-<unset>}"
-  echo "[tmux] CUDA_LAUNCH_BLOCKING=\${CUDA_LAUNCH_BLOCKING:-0}"
-  echo "[tmux] ckpt=\${CKPT_RESOLVED}"
+  echo "[tmux] host=$(hostname)"
+  echo "[tmux] SLURM_JOB_ID=${SLURM_JOB_ID:-<none>}"
+  echo "[tmux] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+  echo "[tmux] CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}"
+  echo "[tmux] ckpt=${CKPT_RESOLVED}"
   echo "========================================="
 
   if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi || true
   fi
 
-  if [[ "\${TORCH_GPU_PROBE}" -eq 1 ]]; then
-    "\${PYTHON_BIN}" - <<'PY'
+  if [[ "${TORCH_GPU_PROBE}" -eq 1 ]]; then
+    "${PYTHON_BIN}" - <<'PY'
 import torch
 print("[tmux][torch] torch:", torch.__version__)
 print("[tmux][torch] cuda available:", torch.cuda.is_available())
@@ -356,62 +252,67 @@ if torch.cuda.is_available():
 PY
   fi
   echo "========================================="
-} 2>&1 | tee -a "\${LOG_FILE}"
+} 2>&1 | tee -a "${LOG_FILE}"
 
-if [[ "\${FAIL_IF_NO_SLURM}" -eq 1 ]] && [[ -z "\${SLURM_JOB_ID:-}" ]]; then
-  echo "[FATAL] SLURM_JOB_ID is empty." | tee -a "\${LOG_FILE}"
+if [[ "${FAIL_IF_NO_SLURM}" -eq 1 ]] && [[ -z "${SLURM_JOB_ID:-}" ]]; then
+  echo "[FATAL] SLURM_JOB_ID is empty." | tee -a "${LOG_FILE}"
   exit 2
 fi
 
 TF32_ARGS=()
-if [[ "\${USE_TF32}" -eq 1 ]]; then TF32_ARGS=(--tf32); fi
+if [[ "${USE_TF32}" -eq 1 ]]; then TF32_ARGS=(--tf32); fi
 
 AMP_ARGS=()
-if [[ "\${USE_AMP}" -eq 1 ]]; then AMP_ARGS=(--amp --amp_dtype "\${AMP_DTYPE}"); fi
+if [[ "${USE_AMP}" -eq 1 ]]; then AMP_ARGS=(--amp --amp_dtype "${AMP_DTYPE}"); fi
 
 STATION_ARGS=()
-if [[ -n "\${STATION}" ]]; then STATION_ARGS=(--station "\${STATION}"); fi
+if [[ -n "${STATION}" ]]; then STATION_ARGS=(--station "${STATION}"); fi
 
 TEST_ARGS=()
-if [[ -n "\${TEST_ROOT_DIR}" ]]; then TEST_ARGS=(--test_root_dir "\${TEST_ROOT_DIR}"); fi
+if [[ -n "${TEST_ROOT_DIR}" ]]; then TEST_ARGS=(--test_root_dir "${TEST_ROOT_DIR}"); fi
 
 YEARS_ARGS=()
-if [[ -n "\${YEARS}" ]]; then YEARS_ARGS=(--years "\${YEARS}"); fi
+if [[ -n "${YEARS}" ]]; then YEARS_ARGS=(--years "${YEARS}"); fi
 
-DL_ARGS=(--num_workers "\${NUM_WORKERS}" --prefetch_factor "\${PREFETCH_FACTOR}" --mp_context "\${MP_CONTEXT}")
-if [[ "\${PIN_MEMORY}" -eq 1 ]]; then DL_ARGS+=(--pin_memory); fi
-if [[ "\${PERSISTENT_WORKERS}" -eq 1 ]]; then DL_ARGS+=(--persistent_workers); fi
+DL_ARGS=(--num_workers "${NUM_WORKERS}" --prefetch_factor "${PREFETCH_FACTOR}" --mp_context "${MP_CONTEXT}")
+if [[ "${PIN_MEMORY}" -eq 1 ]]; then DL_ARGS+=(--pin_memory); fi
+if [[ "${PERSISTENT_WORKERS}" -eq 1 ]]; then DL_ARGS+=(--persistent_workers); fi
 
-THREAD_ARGS=(--torch_threads "\${TORCH_THREADS}")
+THREAD_ARGS=(--torch_threads "${TORCH_THREADS}")
 
 # IMPORTANT: pass ONLY args that exist in infer.py
-"\${PYTHON_BIN}" -u "\${INFER_PY}" \\
-  --root_dir "\${ROOT_DIR}" \\
-  "\${TEST_ARGS[@]}" \\
-  "\${STATION_ARGS[@]}" \\
-  --station_json_dir "\${STATION_JSON_DIR}" \\
-  --model "\${MODEL}" \\
-  --model_label "\${MODEL_LABEL}" \\
-  --encoder_type "\${ENCODER_TYPE}" \\
-  --temporal_block "\${TEMPORAL_BLOCK}" \\
-  --head_type "\${HEAD_TYPE}" \\
-  --history_hours "\${HISTORY_HOURS}" \\
-  --batch_size "\${BATCH_SIZE}" \\
-  --ckpt "\${CKPT_RESOLVED}" \\
-  --out_dir "${OUT_DIR}" \\
-  --save_npz \\
-  "\${YEARS_ARGS[@]}" \\
-  "\${AMP_ARGS[@]}" \\
-  "\${TF32_ARGS[@]}" \\
-  "\${THREAD_ARGS[@]}" \\
-  "\${DL_ARGS[@]}" \\
-  2>&1 | tee -a "\${LOG_FILE}"
+CMD=(
+  "${PYTHON_BIN}" -u "${INFER_PY}"
+  --root_dir "${ROOT_DIR}"
+  "${TEST_ARGS[@]}"
+  "${STATION_ARGS[@]}"
+  --station_json_dir "${STATION_JSON_DIR}"
+  --model "${MODEL}"
+  --model_label "${MODEL_LABEL}"
+  --encoder_type "${ENCODER_TYPE}"
+  --temporal_block "${TEMPORAL_BLOCK}"
+  --head_type "${HEAD_TYPE}"
+  --history_hours "${HISTORY_HOURS}"
+  --batch_size "${BATCH_SIZE}"
+  --ckpt "${CKPT_RESOLVED}"
+  --out_dir "${OUT_DIR}"
+  --save_npz
+  "${YEARS_ARGS[@]}"
+  "${AMP_ARGS[@]}"
+  "${TF32_ARGS[@]}"
+  "${THREAD_ARGS[@]}"
+  "${DL_ARGS[@]}"
+)
+write_infer_command "${RUN_DIR}/command_used.sh" "${CMD[@]}"
+"${CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"
 
-echo "[DONE] outputs in: ${OUT_DIR}" | tee -a "\${LOG_FILE}"
-EOF
+echo "[DONE] outputs in: ${OUT_DIR}" | tee -a "${LOG_FILE}"
+RUNNER_BODY
+} > "${RUNNER}"
 
 chmod +x "${RUNNER}"
-tmux new-session -d -s "${SESSION_NAME}" -c "${WORKDIR}" "${RUNNER}"
+printf -v RUNNER_COMMAND 'bash %q' "${RUNNER}"
+tmux new-session -d -s "${SESSION_NAME}" -c "${WORKDIR}" "${RUNNER_COMMAND}"
 
 echo "Started inference in tmux: ${SESSION_NAME}"
 echo "Attach:  tmux attach -t ${SESSION_NAME}"

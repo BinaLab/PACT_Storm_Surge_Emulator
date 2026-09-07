@@ -104,9 +104,6 @@ print("\nSaved local grid metadata to:", os.path.join(out_dir, "grid_local_cmip6
 # Feature index of pressure in the 3 columns coming from fort.22
 P_IDX = 2
 
-forcing_local_by_year_3h = {}
-forcing_local_by_year_6h = {}
-
 for year in years:
     fort_path = os.path.join(forcing_dir, f"fort_{year}.22")
     if not os.path.exists(fort_path):
@@ -204,9 +201,6 @@ for year in years:
         lat_forcing=lat_forcing,
         lon_forcing=lon_forcing,
     )
-
-    forcing_local_by_year_3h[year] = forcing_5d_local_3h
-    forcing_local_by_year_6h[year] = forcing_5d_local_6h
 
     print(
         f"{year}: "

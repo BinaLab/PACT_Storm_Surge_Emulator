@@ -6,6 +6,8 @@ This file intentionally houses all model definitions so checkpoints created by
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -77,8 +79,10 @@ def canonical_head_type(head_type: str) -> str:
     raise ValueError(f"Unknown head_type: {head_type!r}. Expected 'single' or 'dual'.")
 
 
-def _make_graphsage_layers(in_channels: int, hidden_channels: int, num_layers: int) -> nn.ModuleList:
+def _make_graphsage_layers(in_channels: int, hidden_channels: int, num_layers: int = 2) -> nn.ModuleList:
     """Build the historical GraphSAGE stack without changing state-dict keys."""
+    if num_layers < 2:
+        raise ValueError(f"GraphSAGE encoder requires num_layers >= 2, got {num_layers}.")
     convs = nn.ModuleList()
     convs.append(SAGEConv(in_channels, hidden_channels))
     for _ in range(num_layers - 2):
@@ -212,6 +216,8 @@ class SpatialOnlyGraphSAGEBatch(nn.Module):
     Optional p_mean pathway:
       If enabled and `batch.p_mean_curr` is provided, a small encoder embeds the
       scalar and concatenates it to the pooled graph representation.
+      Missing pressure uses a zero embedding with a warning, preserving the
+      checkpoint's head dimensions without treating missing data as pressure 0.
     """
 
     def __init__(
@@ -267,12 +273,20 @@ class SpatialOnlyGraphSAGEBatch(nn.Module):
         h_pool = global_mean_pool(h, batch_index)
         h_pool = F.dropout(h_pool, p=self.dropout, training=self.training)
 
-        if self.pmean_curr_enc is not None and hasattr(batch, "p_mean_curr"):
-            p_mean_curr = batch.p_mean_curr
-            if p_mean_curr.dim() == 1:
-                p_mean_curr = p_mean_curr.unsqueeze(-1)
-            p_mean_curr = p_mean_curr.to(dtype=h_pool.dtype)
-            p_mean_emb = self.pmean_curr_enc(p_mean_curr)
+        if self.pmean_curr_enc is not None:
+            if hasattr(batch, "p_mean_curr"):
+                p_mean_curr = batch.p_mean_curr
+                if p_mean_curr.dim() == 1:
+                    p_mean_curr = p_mean_curr.unsqueeze(-1)
+                p_mean_curr = p_mean_curr.to(dtype=h_pool.dtype)
+                p_mean_emb = self.pmean_curr_enc(p_mean_curr)
+            else:
+                warnings.warn(
+                    "use_pmean=True but batch.p_mean_curr is missing; using a zero pressure embedding.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                p_mean_emb = h_pool.new_zeros((h_pool.size(0), self.pmean_curr_enc[-1].out_features))
             h_pool = torch.cat([h_pool, p_mean_emb], dim=-1)
 
         return self.lin_out(h_pool)
@@ -290,6 +304,7 @@ class SpatioTemporalGraphSAGEBatch(nn.Module):
     Optional p_mean pathway:
       If enabled and `batch.p_mean_hist` exists, a compact history encoder is
       concatenated to the final LSTM state before prediction.
+      Missing pressure uses a zero embedding with a warning.
     """
 
     def __init__(
@@ -371,12 +386,20 @@ class SpatioTemporalGraphSAGEBatch(nn.Module):
         h_final = out[:, -1, :]
         h_final = F.dropout(h_final, p=self.dropout, training=self.training)
 
-        if self.pmean_hist_enc is not None and hasattr(batch, "p_mean_hist"):
-            p_mean_hist = batch.p_mean_hist
-            if p_mean_hist.dim() == 3 and p_mean_hist.size(-1) == 1:
-                p_mean_hist = p_mean_hist.squeeze(-1)
-            p_mean_hist = p_mean_hist.to(dtype=h_final.dtype)
-            p_mean_emb = self.pmean_hist_enc(p_mean_hist)
+        if self.pmean_hist_enc is not None:
+            if hasattr(batch, "p_mean_hist"):
+                p_mean_hist = batch.p_mean_hist
+                if p_mean_hist.dim() == 3 and p_mean_hist.size(-1) == 1:
+                    p_mean_hist = p_mean_hist.squeeze(-1)
+                p_mean_hist = p_mean_hist.to(dtype=h_final.dtype)
+                p_mean_emb = self.pmean_hist_enc(p_mean_hist)
+            else:
+                warnings.warn(
+                    "use_pmean=True but batch.p_mean_hist is missing; using a zero pressure embedding.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                p_mean_emb = h_final.new_zeros((h_final.size(0), self.pmean_hist_enc[-1].out_features))
             h_final = torch.cat([h_final, p_mean_emb], dim=-1)
 
         return self.lin_out(h_final)

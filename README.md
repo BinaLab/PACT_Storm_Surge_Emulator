@@ -32,6 +32,7 @@ Emulator/
 |-- emulator/
 |   |-- common/
 |   |   |-- distributed.py
+|   |   |-- inference_artifacts.sh
 |   |   |-- io_utils.py
 |   |   `-- runtime.py
 |   |-- data/
@@ -121,11 +122,15 @@ Each graph file is filtered by station name when `STATION` or `--station` is set
 
 The spatial encoder is selected with `ENCODER_TYPE="GraphSAGE"` or `ENCODER_TYPE="CNN"`. The CNN path reads `grid_H` and `grid_W` from each graph, reshapes flattened node features from `(H*W, F)` to `(F, H, W)`, applies same-resolution 3x3 convolutions, and returns one `hidden_channels` token per grid node. No grid dimensions are hardcoded in the model or launcher.
 
+`NUM_LAYERS` defaults to 2. GraphSAGE requires at least 2 layers and rejects 0 or 1 explicitly; CNN continues to support 1 or more layers.
+
 For PACT, `TEMPORAL_BLOCK` selects the middle sequence processor: `Transformer`, `MLP`, `LSTM`, or `GRU` (`attn` is accepted as an alias for `Transformer`). Every option receives time embeddings and maps `(B,L,hidden_channels)` back to the same shape, where `L=T` normally; the final horizon-query cross-attention is unchanged. `TRANSFORMER_LAYERS` controls the depth of every temporal option, while `TRANSFORMER_FF_MULT` only affects Transformer/MLP. The MLP option is token-wise, so the final horizon cross-attention performs its cross-time aggregation.
 
 `HEAD_TYPE` selects PACT's final prediction head. `single` sends each horizon context directly through the existing base MLP. `dual` is the backward-compatible default and retains the gated tail correction: `y = y_base + gate * sigmoid(alpha_logit) * r_tail`. Both variants consume the same `c_flat` after optional global p_mean concatenation and use the same base-head width and `HEAD_DROPOUT`; `GATE_MODE`, `GATE_BIAS_INIT`, `TAIL_TANH_CLIP`, and `ALPHA_INIT_LOGIT` only affect `dual`.
 
 > **p_mean note:** shipped configs use `USE_PMEAN=0`. With token-mode p_mean enabled, the historical layout is `[forcing tokens for T steps][p_mean tokens for T steps]`; LSTM/GRU therefore process a sequence of length `2T`. If this combination is used later, consider time-wise fusion or interleaving as a separate modeling choice.
+
+When a baseline enables `USE_PMEAN=1` and its batch lacks the required pressure field (`p_mean_curr` for the spatial baseline, `p_mean_hist` for the temporal baseline), it warns and concatenates a zero pressure embedding. It retains the checkpoint's architecture; it does not feed an artificial pressure value of zero through the pressure encoder. Existing pressure fields use the original encoding path. PACT retains its existing missing-pressure behavior: omit pressure tokens and use a zero global embedding when that branch is enabled. These fallbacks support single-process training/evaluation; missing-field training leaves pressure-encoder parameters unused, so the current DDP configuration with `find_unused_parameters=False` is not supported for that case. Mixed samples with different metadata keys within one PyG batch are outside this fallback.
 
 ## Training
 
@@ -224,6 +229,8 @@ Outputs go to:
 ```text
 All_Inference_Results/<Station>_<ModelLabel>_<Source>_To_<Target>_<timestamp>/
 |-- run_infer.sh
+|-- infer_config_used.sh
+|-- command_used.sh
 |-- infer_<STATION>_<target>_<MODEL>_hist<HISTORY_HOURS>h_<timestamp>.log
 `-- outputs/
     |-- metrics_per_year_<test_tag>_<station>_<model>.json
@@ -238,6 +245,8 @@ For example, evaluating the AWI-trained P3 Best checkpoint on AWI data creates
 `CMIP6_EC_EARTH`, `CMIP6_MPI`, or `CMIP6_MRI` directory names.
 
 The `.npz` file contains `y_true`, `y_pred`, and `tags`. Metrics are denormalized before reporting, so RMSE and MAE are in physical target units.
+
+`infer_config_used.sh` stores the resolved common/selected config values, launcher defaults, applicable environment values, absolute input paths, and the selected checkpoint path. It can be sourced without the original config files. The tmux runner reads this snapshot and does not re-resolve the checkpoint glob. `command_used.sh` records the actual interpreter, arguments, working directory, and selected CUDA environment values; run `bash <run-directory>/command_used.sh` to repeat that command with the same output paths. Existing outputs at those paths may be replaced. The metrics JSON also records `inference_args` and `checkpoint_args`, including for direct Python invocations.
 CNN output filenames append `_CNN` after the model name, non-Transformer PACT outputs append their temporal block name, and single-head PACT outputs append `_single`. GraphSAGE + Transformer + dual keeps the historical filenames unchanged.
 
 ## Multi-Target Evaluation
@@ -277,7 +286,7 @@ The first field remains available as a descriptive/config label. Output folder
 names are derived from `STATION`, `MODEL_LABEL`, `ROOT_DIR`, and the target graph
 path, so stale legacy labels cannot put a run in a misleading directory.
 
-Use an empty test root to fall back to the NCEP year-split test from `ROOT_DIR`:
+Use an empty test root to evaluate the held-out year split from `ROOT_DIR`. Inference reuses the checkpoint's training/validation ratios, year shuffle, seed, and future-only filter:
 
 ```bash
 RUNS=(
@@ -290,9 +299,12 @@ Unlike `infer.sh`, `infer_multi.sh` runs in the current shell and does not creat
 ```text
 All_Inference_Results/<Station>_<ModelLabel>_<Source>_To_<Target>_<timestamp>/
 |-- infer_config_used.sh
+|-- command_used.sh
 |-- infer_<STATION>_<MODEL>_hist<HISTORY_HOURS>h_<timestamp>.log
 `-- outputs/
 ```
+
+Each multi-target snapshot records only its own target in `RUNS`. Pass that snapshot to either launcher to create another run for that target, or use `command_used.sh` to repeat its exact command at the original output location. Snapshots preserve configuration and paths; they do not copy model weights, datasets, source code, or the conda environment.
 
 ## Key Config Fields
 
@@ -318,7 +330,7 @@ INFERENCE_RESULTS_ROOT="./All_Inference_Results"
 Field notes:
 
 - `ROOT_DIR`: graph root used for training, validation, and checkpoint-compatible statistics.
-- `TEST_ROOT_DIR`: optional external evaluation root. If empty, inference uses the NCEP year-split test set from `ROOT_DIR`.
+- `TEST_ROOT_DIR`: optional root for all-year evaluation. If empty, inference reconstructs the checkpoint's held-out year split from `ROOT_DIR`. Setting it to the source root includes training/validation years; those results describe full-source performance and must not be reported as held-out test performance. The shipped multi-target configs use all-year evaluation.
 - `MODEL`: either `baseline` or `perceiver3`.
 - `MODEL_LABEL`: human-readable model/checkpoint label used in run folder names, for example `P3_Best`.
 - `INFERENCE_RESULTS_ROOT`: common parent directory for every `infer.sh` and `infer_multi.sh` run.
@@ -327,7 +339,7 @@ Field notes:
 - `HEAD_TYPE`: PACT prediction head: `dual` (backward-compatible gated tail head) or `single` (base MLP only).
 - `HISTORY_HOURS`: history window expected by the model or checkpoint. It must be a multiple of 6.
 - `CKPT_PATH`: checkpoint path. Glob patterns are allowed; the newest matching file is used.
-- `YEARS`: optional comma-separated year tags. Leave empty to evaluate every available year.
+- `YEARS`: optional comma-separated year tags. Leave empty to evaluate every available year in the selected evaluation population. This filter applies to per-year and overall metrics whether or not NPZ output is enabled.
 - `USE_AMP`, `AMP_DTYPE`, `USE_TF32`, `TORCH_THREADS`: speed/runtime knobs.
 - `NUM_WORKERS`, `PIN_MEMORY`, `PERSISTENT_WORKERS`, `PREFETCH_FACTOR`, `MP_CONTEXT`: DataLoader knobs.
 

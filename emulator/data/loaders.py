@@ -18,16 +18,18 @@ def build_loader(
     persistent_workers,
     prefetch_factor,
     mp_context,
+    shuffle: bool = False,
 ):
     """Build a safe `torch_geometric.loader.DataLoader`.
 
     Important guardrails:
     - If `num_workers == 0`, worker-only kwargs are omitted.
+    - Evaluation keeps dataset order; training opts into shuffling explicitly.
     - If a sampler is provided (DDP), shuffling is disabled.
     - `prefetch_factor` is only passed when valid.
     """
     num_workers = int(num_workers)
-    shuffle = sampler is None
+    shuffle = bool(shuffle) and sampler is None
 
     kwargs = dict(
         batch_size=batch_size,

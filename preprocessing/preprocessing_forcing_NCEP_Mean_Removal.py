@@ -78,8 +78,6 @@ Lon_grid_local, Lat_grid_local = np.meshgrid(lon_local, lat_local)  # (nlat, nlo
 out_dir = "./Processed_Forcing_NCEP"
 os.makedirs(out_dir, exist_ok=True)
 
-forcing_local_by_year = {}
-
 # Feature indices in the final 5D array
 # (TIME, nlat, nlon, 5) = [WVX, WVY, PR, lon, lat]
 P_IDX = 2
@@ -167,8 +165,6 @@ for year in years:
         lat_local=lat_local,
         lon_local=lon_local,
     )
-
-    forcing_local_by_year[year] = forcing_5d_local
 
 print("\nDone. Saved processed NCEP local forcing under:", out_dir)
 print("Note: each year now has both:")

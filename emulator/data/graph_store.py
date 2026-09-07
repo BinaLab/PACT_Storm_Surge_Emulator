@@ -315,25 +315,25 @@ class ForcingGraphView(Dataset):
         if hasattr(g, "grid_W"):
             data.grid_W = int(g.grid_W)
 
+        window = self.history_steps + 1
         if hasattr(g, "x_hist"):
-            window = self.history_steps + 1
             x_hist = g.x_hist[-window:]  # (W, N, F)
             data.x_hist = x_hist.permute(1, 0, 2)  # (N, W, F)
 
-            # Optional global mean pressure history aligned with x_hist window.
-            if hasattr(g, "p_mean_hist"):
-                p_mean_hist = g.p_mean_hist
-                if p_mean_hist.dim() == 2 and p_mean_hist.size(-1) == 1:
-                    p_mean_hist = p_mean_hist.squeeze(-1)
+        # Pressure metadata also belongs to spatial-only graphs without x_hist.
+        if hasattr(g, "p_mean_hist"):
+            p_mean_hist = g.p_mean_hist
+            if p_mean_hist.dim() == 2 and p_mean_hist.size(-1) == 1:
+                p_mean_hist = p_mean_hist.squeeze(-1)
 
-                p_mean_hist = p_mean_hist[-window:]
-                data.p_mean_hist = p_mean_hist.view(1, -1)
-                data.p_mean_curr = p_mean_hist[-1].view(1)
-            elif hasattr(g, "p_mean_curr"):
-                if torch.is_tensor(g.p_mean_curr):
-                    data.p_mean_curr = g.p_mean_curr.view(1)
-                else:
-                    data.p_mean_curr = torch.tensor([g.p_mean_curr], dtype=torch.float32)
+            p_mean_hist = p_mean_hist[-window:]
+            data.p_mean_hist = p_mean_hist.view(1, -1)
+            data.p_mean_curr = p_mean_hist[-1].view(1)
+        elif hasattr(g, "p_mean_curr"):
+            if torch.is_tensor(g.p_mean_curr):
+                data.p_mean_curr = g.p_mean_curr.view(1)
+            else:
+                data.p_mean_curr = torch.tensor([g.p_mean_curr], dtype=torch.float32)
 
         data.tag = self.store.graph_tags[idx]
         return data
