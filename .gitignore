@@ -36,6 +36,9 @@ events.out.tfevents.*
 *.pkl
 *.joblib
 
+# Local experiment configurations
+/experiment_configs/
+
 # Data / outputs
 /data/
 /Data
